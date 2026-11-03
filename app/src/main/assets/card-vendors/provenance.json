@@ -1,0 +1,19 @@
+{
+  "sourceFile": "GroupMemberSelector-legacy-BIJ8h7lR.js",
+  "sourceSha256": "105a53830359759e67202229a5a06212dde70366d416669d8907d3bad1d668bb",
+  "files": [
+    {
+      "name": "zod.js",
+      "sha256": "b167bca0ae67ed4b159d0f94d6a98eb9615ec526516141584d1554ac0c3b0e0b"
+    },
+    {
+      "name": "ejs.js",
+      "sha256": "6261d08fbb091966071b2c870c252f5972765c18d80cf2da1095775c7a23272f"
+    },
+    {
+      "name": "mvu.js",
+      "sha256": "3e56b88f118f4ec7121ea80b0f2e6852f73ed253efcf23d9016c635b4fef7af1"
+    }
+  ],
+  "extraction": "Wc literal; Jc/EJS declarations with browser IO adapter; MVU helpers and schema hooks from decoded runtime literals"
+}
