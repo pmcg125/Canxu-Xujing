@@ -7,6 +7,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.ui.text.withStyle
 import kotlinx.coroutines.Dispatchers
@@ -63,19 +69,28 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     val scope=rememberCoroutineScope()
     val context=LocalContext.current
     val backgroundPath=session.extra.text("backgroundImage")
-    val backgroundImage by produceState<ImageBitmap?>(null,backgroundPath) {
+    val backgroundKey=session.extra.text("background","default")
+    val blurRadius=((session.extra["backgroundBlur"] as? JsonPrimitive)?.floatOrNull ?: 0f).coerceIn(0f,24f)
+    val dimAmount=((session.extra["backgroundDim"] as? JsonPrimitive)?.floatOrNull ?: 0f).coerceIn(0f,0.7f)
+    val tintFromBackground=(session.extra["backgroundTint"] as? JsonPrimitive)?.booleanOrNull != false
+    val palette=backgroundPalette(backgroundKey)
+    val scene by produceState(ChatScene(null,null),backgroundPath,backgroundKey,tintFromBackground) {
         value=withContext(Dispatchers.IO) { runCatching {
-            if(backgroundPath.isBlank()) return@runCatching null
-            val file=File(context.filesDir,backgroundPath).canonicalFile
-            require(file.toPath().startsWith(context.filesDir.canonicalFile.toPath()))
-            val options=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
-            android.graphics.BitmapFactory.decodeFile(file.path,options)
-            options.inSampleSize=1
-            while(maxOf(options.outWidth,options.outHeight)/options.inSampleSize>1920) options.inSampleSize*=2
-            options.inJustDecodeBounds=false
-            android.graphics.BitmapFactory.decodeFile(file.path,options)?.asImageBitmap()
-        }.getOrNull() }
+            val bitmap=if(backgroundPath.isBlank()) null else {
+                val file=File(context.filesDir,backgroundPath).canonicalFile
+                require(file.toPath().startsWith(context.filesDir.canonicalFile.toPath()))
+                val options=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                android.graphics.BitmapFactory.decodeFile(file.path,options)
+                options.inSampleSize=1
+                while(maxOf(options.outWidth,options.outHeight)/options.inSampleSize>1920) options.inSampleSize*=2
+                options.inJustDecodeBounds=false
+                android.graphics.BitmapFactory.decodeFile(file.path,options)?.asImageBitmap()
+            }
+            ChatScene(bitmap, if(tintFromBackground) bitmap?.let(::dominantAccent) ?: backgroundAccent(backgroundKey) else null)
+        }.getOrDefault(ChatScene(null,null)) }
     }
+    val backgroundImage=scene.image
+    val backgroundBrush=if(palette.size>1) Brush.linearGradient(palette) else SolidColor(palette.first())
     var input by rememberSaveable(session.id) { mutableStateOf("") }
     var target by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
@@ -86,12 +101,6 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     val scriptButtons = SessionHooks.buttons.filter { it.sessionId == session.id }
     val reading = session.readingMode != "bubble"
     val fontSize = (session.extra["fontSize"] as? JsonPrimitive)?.floatOrNull ?: state.preferences.fontSize
-    val background = when (session.extra.text("background")) {
-        "paper" -> Color(0xFFE2B666).copy(alpha = .09f).compositeOver(MaterialTheme.colorScheme.surface)
-        "mist" -> Color(0xFF5DABA5).copy(alpha = .09f).compositeOver(MaterialTheme.colorScheme.surface)
-        "rose" -> Color(0xFFD18DA5).copy(alpha = .09f).compositeOver(MaterialTheme.colorScheme.surface)
-        else -> MaterialTheme.colorScheme.surface
-    }
     BackHandler(enabled = settings || models) { if (models) models = false else settings = false }
     if (models) { ModelSettings(state, runtime, actions, onClose = { models = false }); return }
     if (settings) {
@@ -112,10 +121,12 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
         listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) autoFollow = false }
     }
     LaunchedEffect(session.roleIds) { if (target !in session.roleIds) target = null }
-    Box(Modifier.fillMaxSize().background(background)) {
-    backgroundImage?.let { Image(it,null,Modifier.matchParentSize(),contentScale=ContentScale.Crop,alpha=0.3f) }
+    MaterialTheme(colorScheme = chatColorScheme(scene.accent)) {
+    Box(Modifier.fillMaxSize().background(backgroundBrush)) {
+    backgroundImage?.let { Image(it,null,Modifier.matchParentSize().scale(1.06f).blur(blurRadius.dp,BlurredEdgeTreatment.Unbounded),contentScale=ContentScale.Crop,alpha=0.9f) }
+    if(dimAmount>0f) Box(Modifier.matchParentSize().background(Color.Black.copy(alpha=dimAmount)))
     Scaffold(
-        containerColor = if(backgroundImage==null) background else Color.Transparent,
+        containerColor = if(backgroundImage==null && palette.size==1) palette.first() else Color.Transparent,
         topBar = {
             TopAppBar(title = {
                 Column {
@@ -227,6 +238,81 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     editing?.let { message -> MessageEditor(message, { editing = null }, { content -> actions.editMessage(message.id, content); editing = null }) }
     deleting?.let { message -> ConfirmDelete("这条消息", "该消息将从当前会话中删除。", { deleting = null }, { actions.deleteMessage(message.id) }) }
     rewinding?.let { message -> AlertDialog(onDismissRequest = { rewinding = null }, title = { Text("回溯到这条消息？") }, text = { Text("后续消息将移除，剧情变量回到此节点保存的状态。建议先导出当前会话。") }, confirmButton = { TextButton(onClick = { actions.rewind(message.id); rewinding = null }) { Text("回溯") } }, dismissButton = { TextButton(onClick = { rewinding = null }) { Text("取消") } }) }
+    }
+}
+
+private data class ChatScene(val image: ImageBitmap?, val accent: Color?)
+
+/** Solid or two-stop gradient presets; the surface colour keeps the app theme's light/dark base. */
+@Composable
+private fun backgroundPalette(key: String): List<Color> {
+    val surface = MaterialTheme.colorScheme.surface
+    fun tint(value: Long, alpha: Float = .10f) = Color(value).copy(alpha = alpha).compositeOver(surface)
+    return when (key) {
+        "paper" -> listOf(tint(0xFFE2B666), surface)
+        "mist" -> listOf(tint(0xFF5DABA5), surface)
+        "rose" -> listOf(tint(0xFFD18DA5), surface)
+        "celadon" -> listOf(tint(0xFF6FA79B), surface)
+        "forest" -> listOf(tint(0xFF5C7C55), surface)
+        "cream" -> listOf(tint(0xFFE8C58A), surface)
+        "dusk" -> listOf(Color(0xFF2B3A55).copy(alpha = .55f).compositeOver(surface), tint(0xFF6D5B8E, .40f))
+        "aurora" -> listOf(tint(0xFF4E9FC4, .45f), tint(0xFF8E6FD0, .45f))
+        else -> listOf(surface)
+    }
+}
+
+private fun backgroundAccent(key: String): Color? = when (key) {
+    "paper" -> Color(0xFFA9701F)
+    "mist" -> Color(0xFF3E8C86)
+    "rose" -> Color(0xFFB05C7A)
+    "celadon" -> Color(0xFF4E8C80)
+    "forest" -> Color(0xFF4F7048)
+    "cream" -> Color(0xFFB8894A)
+    "dusk" -> Color(0xFF6D5B8E)
+    "aurora" -> Color(0xFF5AA6C8)
+    else -> null
+}
+
+/** Weighted average of mid-tone pixels, pushed to a usable accent (min saturation, bounded value). */
+private fun dominantAccent(bitmap: ImageBitmap): Color? {
+    val map = runCatching { bitmap.toPixelMap() }.getOrNull() ?: return null
+    val stepX = maxOf(1, map.width / 24)
+    val stepY = maxOf(1, map.height / 24)
+    var r = 0.0; var g = 0.0; var b = 0.0; var weight = 0.0
+    var y = 0
+    while (y < map.height) {
+        var x = 0
+        while (x < map.width) {
+            val c = map[x, y]
+            val lum = 0.299 * c.red + 0.587 * c.green + 0.114 * c.blue
+            if (lum in 0.08..0.92) {
+                val w = 1.0 - kotlin.math.abs(lum - 0.5)
+                r += c.red * w; g += c.green * w; b += c.blue * w; weight += w
+            }
+            x += stepX
+        }
+        y += stepY
+    }
+    if (weight <= 0.0) return null
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(
+        android.graphics.Color.rgb((r / weight * 255).toInt(), (g / weight * 255).toInt(), (b / weight * 255).toInt()), hsv)
+    hsv[1] = hsv[1].coerceAtLeast(0.32f)
+    hsv[2] = hsv[2].coerceIn(0.45f, 0.78f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+@Composable
+private fun chatColorScheme(accent: Color?): ColorScheme {
+    val base = MaterialTheme.colorScheme
+    if (accent == null) return base
+    val container = accent.copy(alpha = .18f).compositeOver(base.surface)
+    return base.copy(
+        primary = accent,
+        primaryContainer = container,
+        onPrimaryContainer = if (container.luminance() > .5f) Color(0xFF1B1B1F) else Color(0xFFF3F3F6),
+        secondaryContainer = accent.copy(alpha = .12f).compositeOver(base.surface),
+    )
 }
 
 /** Time separator: time only for today, date + time otherwise. */

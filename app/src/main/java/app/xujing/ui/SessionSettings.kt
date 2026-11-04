@@ -92,6 +92,15 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
         CollapsibleSection("阅读外观") {
             Text("背景图片可在聊天菜单中选择。",style=MaterialTheme.typography.bodySmall)
             if(draft.extra.text("backgroundImage").isNotBlank()) TextButton(onClick={ draft=draft.copy(extra=JsonObject(draft.extra-"backgroundImage")) }) { Text("移除背景图片") }
+            val blur=((draft.extra["backgroundBlur"] as? JsonPrimitive)?.floatOrNull ?: 0f).coerceIn(0f,24f)
+            val dim=((draft.extra["backgroundDim"] as? JsonPrimitive)?.floatOrNull ?: 0f).coerceIn(0f,0.7f)
+            Text("背景模糊 ${blur.toInt()}")
+            Slider(value=blur,onValueChange={ draft=draft.copy(extra=JsonObject(draft.extra+("backgroundBlur" to JsonPrimitive(it)))) },valueRange=0f..24f)
+            Text("背景暗化 ${(dim*100).toInt()}%")
+            Slider(value=dim,onValueChange={ draft=draft.copy(extra=JsonObject(draft.extra+("backgroundDim" to JsonPrimitive(it)))) },valueRange=0f..0.7f)
+            SettingSwitch("主题色跟随背景","从背景图的主打色（或预设底色）提取强调色，只影响聊天界面。",(draft.extra["backgroundTint"] as? JsonPrimitive)?.booleanOrNull != false) {
+                draft=draft.copy(extra=JsonObject(draft.extra+("backgroundTint" to JsonPrimitive(it))))
+            }
             val opacity=((draft.extra["bubbleOpacity"] as? JsonPrimitive)?.floatOrNull ?: 1f).coerceIn(0.1f,1f)
             Text("气泡不透明度 ${(opacity*100).toInt()}%")
             Slider(value=opacity,onValueChange={ draft=draft.copy(extra=JsonObject(draft.extra+("bubbleOpacity" to JsonPrimitive(it)))) },valueRange=0.1f..1f)
@@ -99,7 +108,7 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             ChoiceField("显示模式",draft.readingMode,listOf("reading" to "阅读模式","bubble" to "气泡模式")) { draft=draft.copy(readingMode=it ?: "reading") }
             Text("字号 ${fontSize.toInt()}")
             Slider(value=fontSize,onValueChange={ fontSize=it },valueRange=13f..28f,steps=14)
-            ChoiceField("背景",draft.extra.text("background","default"),listOf("default" to "跟随主题","paper" to "暖纸","mist" to "薄雾","rose" to "浅玫瑰")) { value -> draft=draft.copy(extra=JsonObject(draft.extra+("background" to JsonPrimitive(value ?: "default")))) }
+            ChoiceField("背景",draft.extra.text("background","default"),listOf("default" to "跟随主题","paper" to "暖纸","mist" to "薄雾","rose" to "浅玫瑰","celadon" to "青瓷","forest" to "森野","cream" to "奶油","dusk" to "暮色","aurora" to "极光")) { value -> draft=draft.copy(extra=JsonObject(draft.extra+("background" to JsonPrimitive(value ?: "default")))) }
         }
         Spacer(Modifier.height(20.dp))
     }
