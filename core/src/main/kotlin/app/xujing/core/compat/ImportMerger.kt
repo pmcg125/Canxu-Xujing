@@ -47,6 +47,13 @@ object ImportMerger {
             document.copy(id=libraryIds.getValue(document.id),extra=extra)
         }
         fun sessionExtra(extra: JsonObject) = JsonObject(extra.toMutableMap().apply {
+            (extra["disabledSessionScriptIds"] as? JsonArray)?.let { values ->
+                put("disabledSessionScriptIds",JsonArray(values.map { value ->
+                    val key=(value as? JsonPrimitive)?.contentOrNull ?: return@map value
+                    val role=roleIds.keys.sortedByDescending(String::length).firstOrNull { key.startsWith("$it:") }
+                    JsonPrimitive(if(role==null) key else roleIds.getValue(role)+key.substring(role.length))
+                }))
+            }
             (extra["styleIds"] as? JsonArray)?.let { values ->
                 put("styleIds", JsonArray(values.map { JsonPrimitive(documentId(it.jsonPrimitive.content, "style")) }))
             }

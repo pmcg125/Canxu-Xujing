@@ -102,16 +102,20 @@ class EmbeddingManager(private val context:Context,private val store:AppStore,pr
         val profile=profile(state)
         val rows=store.vectorRows(profile,chat.id)
         if(rows.isEmpty()) return@withContext emptyList()
+        val historyWindow=((chat.extra["maxHistoryMessages"] as? JsonPrimitive)?.intOrNull ?: 40).coerceAtLeast(1)
+        val olderChunks=chunks(chat.copy(messages=chat.messages.dropLast(historyWindow)),chunkSize(state))
+        if(olderChunks.isEmpty()) return@withContext emptyList()
         val queryLimit=if(state.embedding.provider=="local") ((installed().firstOrNull { it.id==state.embedding.localModelId }?.maxTokens ?: 512)-32).coerceAtLeast(1) else 2400
-        val query=chat.messages.takeLast(3).joinToString("\n") { it.content }.takeLast(queryLimit)
+        val queryMessages=((chat.extra["memoryQueryMessages"] as? JsonPrimitive)?.intOrNull ?: 3).coerceIn(1,30)
+        val query=chat.messages.takeLast(queryMessages).joinToString("\n") { it.content }.takeLast(queryLimit)
         if(query.isBlank()) return@withContext emptyList()
         val q=embeddings(state,listOf(query),true).single()
-        val historyWindow=(chat.extra["maxHistoryMessages"] as? JsonPrimitive)?.intOrNull ?: 40
-        val current=chat.messages.takeLast(historyWindow.coerceAtLeast(1)).map { it.id }.toSet()
-        val valid=chunks(chat,chunkSize(state)).map { it.first }.toSet()
-        rows.asSequence().filter { it.id in valid && it.id.substringBefore(':') !in current }.map { it to cosine(it.vector,q) }
-            .filter { it.second >= state.embedding.threshold }.sortedByDescending { it.second }.take(state.embedding.topK.coerceIn(1,100))
-            .map { it.first.text }.toList()
+        val byId=rows.associateBy { it.id }
+        olderChunks.mapIndexedNotNull { index,chunk ->
+            byId[chunk.first]?.let { row -> Triple(index,row,cosine(row.vector,q)) }
+        }.filter { it.third >= state.embedding.threshold }
+            .sortedByDescending { it.third }.take(state.embedding.topK.coerceIn(1,100))
+            .sortedBy { it.first }.map { it.second.text }
     }
     private fun chunkSize(state:AppState):Int = if(state.embedding.provider=="local") minOf(state.embedding.chunkChars,(installed().firstOrNull { it.id==state.embedding.localModelId }?.maxTokens ?: 512)-32).coerceAtLeast(32) else state.embedding.chunkChars
     private fun chunks(chat:ChatSession,size:Int):List<Pair<String,String>> = chat.messages.filter { it.content.isNotBlank() && it.role in setOf("user","assistant") }.flatMap { m ->

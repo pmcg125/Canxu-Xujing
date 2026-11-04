@@ -9,7 +9,8 @@
     const id = String(++sequence);
     const timer = setTimeout(() => { pending.delete(id); reject(new Error('卡片宿主请求超时：' + method)); }, 180000);
     pending.set(id, { resolve, reject, timer });
-    XujingBridge.request(id, method, JSON.stringify(payload));
+    try { XujingBridge.request(context.runtimeToken || '', id, method, JSON.stringify(payload)); }
+    catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
   });
   window.__xujingReply = (id, value) => {
     const task = pending.get(String(id)); if (!task) return;
@@ -21,6 +22,9 @@
   const eventOff = (name, handler) => events.get(eventName(name))?.delete(handler);
   const eventEmit = async (name, ...args) => { for (const handler of [...(events.get(eventName(name)) || [])]) await handler(...args); return args; };
   const eventOnce = (name, handler) => { const wrapped = (...args) => { eventOff(name, wrapped); return handler(...args); }; return eventOn(name, wrapped); };
+  window.eventOn=eventOn;
+  window.eventOff=eventOff;
+  window.eventOnce=eventOnce;
   function pathParts(path) { return String(path).replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean); }
   function getPath(object, path, fallback) { let value = object; for (const key of pathParts(path)) { if (value == null) return fallback; value = value[key]; } return value === undefined ? fallback : value; }
   function setPath(object, path, value) { const keys = pathParts(path); let target = object; keys.forEach((key, index) => { if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('非法变量路径'); if (index === keys.length - 1) target[key] = value; else target = target[key] ||= {}; }); return object; }
@@ -49,7 +53,14 @@
       return clone(result.value);
     } finally { variableWrites--; }
   };
-  const insertOrAssignVariables = (variables,option) => replaceVariables(Object.assign(getVariables(option), clone(variables)),option);
+  const mergeReplacingArrays = (left,right) => {
+    if (Array.isArray(right)) return clone(right);
+    if (!right || typeof right !== 'object') return clone(right);
+    const result = left && typeof left === 'object' && !Array.isArray(left) ? clone(left) : {};
+    for (const [key,value] of Object.entries(right)) result[key] = mergeReplacingArrays(result[key],value);
+    return result;
+  };
+  const insertOrAssignVariables = (variables,option) => replaceVariables(mergeReplacingArrays(getVariables(option),variables),option);
   const updateVariablesWith = async (updater,option) => { const variables = getVariables(option); const updated = await updater(variables); return replaceVariables(updated === undefined ? variables : updated,option); };
   const getChatMessages = async (range = '0-{{lastMessageId}}') => {
     const chat = context.chat || [];
@@ -131,8 +142,33 @@
     removeAllListeners:name=>name===undefined ? events.clear() : events.delete(eventName(name)),
     makeLast:eventOn, makeFirst:(name,handler)=>{ name=eventName(name); events.set(name,new Set([handler,...(events.get(name)||[])])); return eventOn(name,handler); }
   };
-  window.eventEmitAndWait=eventEmit;
-  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', CHAT_CHANGED:'chat_id_changed'};
+  window.__xujingHostEventDepth=0;
+  window.eventEmit=async(name,...args)=>{
+    const local=await eventEmit(name,...args);
+    if(window.__xujingHostEventDepth>0) return local;
+    try { return await request('broadcastRuntimeEvent',{event:name,args,sourceKind:'card',sourceToken:context.runtimeToken}); }
+    catch(error) { console.error(error); return local; }
+  };
+  window.eventEmitAndWait=window.eventEmit;
+  window.__xujingSessionEvent=async(id,name,payload)=>{
+    const multiple=Array.isArray(payload),args=multiple?payload:[payload];
+    window.__xujingHostEventDepth++;
+    try {
+      await eventEmit(name,...args);
+      XujingBridge.eventComplete(id,JSON.stringify(multiple?args:args[0]??null),'');
+    } catch(error) {
+      XujingBridge.eventComplete(id,'null',String(error?.message||error));
+    } finally { window.__xujingHostEventDepth=Math.max(0,window.__xujingHostEventDepth-1); }
+  };
+  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', CHAT_CHANGED:'chat_id_changed', GENERATION_STARTED:'generation_started', GENERATION_ENDED:'generation_ended', GENERATION_STOPPED:'generation_stopped', CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready', GENERATE_AFTER_DATA:'generate_after_data'};
+  window.iframe_events=Object.freeze({
+    MESSAGE_IFRAME_RENDER_STARTED:'message_iframe_render_started',
+    MESSAGE_IFRAME_RENDER_ENDED:'message_iframe_render_ended',
+    GENERATION_STARTED:'js_generation_started',
+    STREAM_TOKEN_RECEIVED_FULLY:'js_stream_token_received_fully',
+    STREAM_TOKEN_RECEIVED_INCREMENTALLY:'js_stream_token_received_incrementally',
+    GENERATION_ENDED:'js_generation_ended'
+  });
   window.initializeGlobal=async (name,value)=>{ window[name]=value; await eventEmit('global_'+name+'_initialized'); };
   window.waitGlobalInitialized=async name=>{
     if(!(name in window)) await new Promise(resolve=>eventOnce('global_'+name+'_initialized',resolve));
@@ -157,8 +193,27 @@
     if (oldVariables !== JSON.stringify(next.variables || {}) && !variableWrites) eventEmit('mag_variable_update_ended', clone(next.variables || {})).catch(console.error);
     stateSynchronized = true;
   };
-  const resize = () => XujingBridge.height(Math.ceil(Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0)));
-  window.__xujingCardReady=async()=>{ resize(); await eventEmit('message_iframe_render_ended',api.getCurrentMessageId()); };
+  // scrollHeight/offsetHeight are clamped to the WebView viewport, so a short card can never shrink.
+  // Measure the content box of the body's children instead.
+  const resize = () => {
+    const body = document.body;
+    if (!body) return;
+    const box = body.getBoundingClientRect();
+    const style = getComputedStyle(body);
+    let bottom = box.top + (parseFloat(style.paddingTop) || 0);
+    for (const child of body.children) {
+      const rect = child.getBoundingClientRect();
+      if (rect.width > 0 || rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+    }
+    let height = Math.ceil(bottom - box.top + (parseFloat(style.paddingBottom) || 0));
+    if (height < 24) height = 24;
+    XujingBridge.height(height);
+  };
+  window.__xujingCardReady=async()=>{
+    resize();
+    try { await window.eventEmit('message_iframe_render_ended',api.getCurrentMessageId()); }
+    finally { if(typeof XujingBridge.ready==='function') XujingBridge.ready(); }
+  };
   document.addEventListener('DOMContentLoaded', () => { new ResizeObserver(resize).observe(document.body); resize(); });
   window.addEventListener?.('pagehide',()=>{ for(const task of pending.values()){clearTimeout(task.timer);task.reject(Error('角色卡已关闭'));} pending.clear();events.clear(); });
 })();

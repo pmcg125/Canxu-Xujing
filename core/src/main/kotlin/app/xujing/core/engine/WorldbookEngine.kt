@@ -112,7 +112,8 @@ internal object WorldbookEngine {
         val recursionLimit = config.num("maxRecursionSteps", "max_recursion_steps", "max_recursion", default = 8).coerceIn(1, 32)
         val percent = config.decimal("budgetPercent", "budget_percent", "world_info_budget", default = 25.0).coerceIn(0.0, 100.0)
         val configuredCap = config.num("budgetCap", "budget_cap", "world_info_budget_cap", default = 2048).coerceAtLeast(0)
-        val budget = (contextTokens * percent / 100).toInt().let { if (configuredCap > 0) minOf(it, configuredCap) else it }
+        val budget = if (percent > 0.0) (contextTokens * percent / 100).toInt().let { if (configuredCap > 0) minOf(it, configuredCap) else it } else configuredCap.takeIf { it > 0 }
+        val budgetText = budget?.toString() ?: "无上限"
         val turn = session.messages.count { it.role == "assistant" && it.content.isNotBlank() }
         val priorEntries = session.worldState["entries"].objectOrEmpty()
         val nextEntries = priorEntries.toMutableMap()
@@ -127,7 +128,7 @@ internal object WorldbookEngine {
         fun entryGroup(entry: WorldEntry): List<String> = entry.data.first("group", "groups", "inclusion_group").strings()
         fun textFor(entry: WorldEntry): String {
             val d = entry.data
-            val localDepth = d.num("scanDepth", "scan_depth", default = scan).coerceIn(1, 1000)
+            val localDepth = d.num("scanDepth", "scan_depth", default = scan).coerceIn(0, 1000)
             val history = session.messages.takeLast(localDepth).joinToString("\n") { message ->
                 val name = if (config.flag("includeNames", "include_names")) "${message.name ?: if (message.role == "user") session.userName else roles.find { it.id == message.speakerId }?.name.orEmpty()}: " else ""
                 name + message.content
@@ -154,6 +155,15 @@ internal object WorldbookEngine {
             } else if (wholeWords) Regex("(?<![\\p{L}\\p{N}_])${Regex.escape(key)}(?![\\p{L}\\p{N}_])", if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)).containsMatchIn(text)
             else text.contains(key, ignoreCase = !caseSensitive)
         }
+        fun delayUntilStep(entry: WorldEntry): Int {
+            val topDelay = entry.data["delayUntilRecursion"] ?: entry.data["delay_until_recursion"]
+            return topDelay?.let { value ->
+                val primitive = value as? JsonPrimitive
+                primitive?.booleanOrNull?.let { if (it) 1 else 0 }
+                    ?: primitive?.contentOrNull?.toIntOrNull()?.coerceAtLeast(0)
+                    ?: 0
+            } ?: entry.data["recursion"].objectOrEmpty().num("delay_until").coerceAtLeast(0)
+        }
         fun eligible(entry: WorldEntry, step: Int): Boolean {
             val d = entry.data
             val old = priorEntries[entry.id].objectOrEmpty()
@@ -164,9 +174,7 @@ internal object WorldbookEngine {
             val effect = d["effect"].objectOrEmpty()
             if (turn < d.num("delay", default = effect.num("delay"))) return false
             val rec = d["recursion"].objectOrEmpty()
-            val delayed = d.flag("delayUntilRecursion", "delay_until_recursion") || rec.num("delay_until") > 0
-            if (delayed && step == 0) return false
-            if (rec.num("delay_until") > step) return false
+            if (delayUntilStep(entry) > step) return false
             val strategy = d["strategy"].objectOrEmpty()
             if (!d.flag("constant") && strategy.str("type") != "constant") {
                 val text = textFor(entry)
@@ -183,6 +191,7 @@ internal object WorldbookEngine {
             }) return false
             return true
         }
+        val lastDelayedStep = sorted.maxOfOrNull(::delayUntilStep)?.coerceAtMost(recursionLimit - 1) ?: 0
         var step = 0
         while (step < recursionLimit) {
             val candidates = sorted.filter { it.id !in active && eligible(it, step) }
@@ -205,7 +214,8 @@ internal object WorldbookEngine {
                 val raw = entry.data.str("content", "text")
                 // Do not apply side effects to a rejected budget candidate.
                 val estimated = estimatedTokens(macros.expand(raw, effects = false))
-                if (!entry.data.flag("ignoreBudget", "ignore_budget") && spent + estimated > budget) {
+                // budget == null means "no limit" (percent 0 and cap 0); only enforce when a cap exists.
+                if (!entry.data.flag("ignoreBudget", "ignore_budget") && budget != null && spent + estimated > budget) {
                     diagnostics += "世界书预算不足，跳过 ${entry.title}（估算 $estimated tokens）。"
                     return@forEach
                 }
@@ -228,14 +238,14 @@ internal object WorldbookEngine {
             recursiveText = active.values.filterNot { (e, _) -> e.data.flag("preventRecursion", "prevent_recursion") || e.data["recursion"].objectOrEmpty().flag("prevent_outgoing") }
                 .joinToString("\n") { it.second }
             if (active.size < minActivations && scan < maxDepth) { scan++; continue }
-            if (!recursion || added == 0) break
+            if (!recursion || (added == 0 && step >= lastDelayedStep)) break
             step++
         }
         val output = active.values.sortedWith(compareBy<Pair<WorldEntry, String>> { it.first.sourceRank }.thenBy { it.first.order })
         output.filter { it.first.position == "outlet" }.groupBy { it.first.outlet }.forEach { (name, chunks) ->
             macros.outlets[name] = chunks.joinToString("\n\n") { it.second }
         }
-        diagnostics += "世界书激活 ${active.size}/${sorted.size}，估算 $spent/$budget tokens；扫描 $scan 条消息。"
+        diagnostics += "世界书激活 " + active.size + "/" + sorted.size + "，估算 " + spent + "/" + budgetText + " tokens；扫描 " + scan + " 条消息。"
         return WorldActivation(output, JsonObject(session.worldState + mapOf("entries" to JsonObject(nextEntries), "turn" to JsonPrimitive(turn))), diagnostics)
     }
 }

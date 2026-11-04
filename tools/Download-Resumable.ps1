@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string[]]$Urls,
     [Parameter(Mandatory=$true)][string]$Destination,
     [string]$ExpectedHash = '',

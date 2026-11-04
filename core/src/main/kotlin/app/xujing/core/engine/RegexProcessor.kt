@@ -23,12 +23,13 @@ internal class RegexProcessor(
         }
     }.distinctBy { it.str("id", "scriptName", "name") + it.str("findRegex", "find_regex") + it.str("replaceString", "replace_string") }
 
-    fun apply(text: String, stage: TextStage, role: String = "assistant", depth: Int = 0, prompt: Boolean = true, processed: Boolean = false): String {
+    fun apply(text: String, stage: TextStage, role: String = "assistant", depth: Int = 0, prompt: Boolean = true, processed: Boolean = false, isEdit: Boolean = false): String {
         var result = text
         rules.forEach { rule ->
             if (rule.flag("disabled") || !rule.flag("enabled", default = true)) return@forEach
             val markdownOnly = rule.flag("markdownOnly", "markdown_only")
             val promptOnly = rule.flag("promptOnly", "prompt_only")
+            if (isEdit && (!rule.flag("runOnEdit", "run_on_edit") || markdownOnly || promptOnly)) return@forEach
             if (processed && !markdownOnly && !promptOnly) return@forEach
             if (stage == TextStage.DISPLAY && promptOnly || stage != TextStage.DISPLAY && markdownOnly) return@forEach
             if (!prompt && promptOnly) return@forEach
@@ -57,20 +58,18 @@ internal class RegexProcessor(
                 }
                 val regex = Regex(pattern, options)
                 val replacement = macros.expand(rule.str("replaceString", "replace_string", "replacement"), effects = false)
+                val trimStrings = rule.first("trimStrings", "trim_strings").strings().map { macros.expand(it, effects = false) }
+                fun clean(value: String): String = trimStrings.fold(value) { current, trim -> if (trim.isEmpty()) current else current.replace(trim, "") }
                 fun replacementFor(match: MatchResult): String {
-                    var body = replacement
-                    rule.first("trimStrings", "trim_strings").strings().forEach { trim ->
-                        body = body.replace("{{match}}", match.value.replace(trim, ""))
-                    }
-                    body = body.replace("{{match}}", match.value)
-                    return Regex("\\$(\\$|&|`|'|\\d{1,2}|<[^>]+>)").replace(body) { token ->
+                    val body = replacement.replace("{{match}}", clean(match.value))
+                    return Regex("\\$(\\$|&|\\x60|'|\\d{1,2}|<[^>]+>)").replace(body) { token ->
                         when (val id = token.groupValues[1]) {
                             "$" -> "$"
-                            "&" -> match.value
+                            "&" -> clean(match.value)
                             "`" -> result.substring(0, match.range.first)
                             "'" -> result.substring(match.range.last + 1)
-                            else -> if (id.startsWith('<')) runCatching { match.groups[id.removeSurrounding("<", ">")]?.value.orEmpty() }.getOrDefault("")
-                                else match.groups[id.toIntOrNull() ?: 0]?.value.orEmpty()
+                            else -> clean(if (id.startsWith('<')) runCatching { match.groups[id.removeSurrounding("<", ">")]?.value.orEmpty() }.getOrDefault("")
+                                else match.groups[id.toIntOrNull() ?: 0]?.value.orEmpty())
                         }
                     }
                 }

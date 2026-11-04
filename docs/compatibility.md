@@ -44,10 +44,10 @@ JSON Patch 的 `path` 及 move/copy 的 `from` 必须提供字符串；非法输
 
 ## HTML 和脚本
 
-- HTML / CSS 在 WebView 中按作者样式呈现。无脚本模式使用固定可滚动区域；允许脚本后可自动测量高度。
+- 聊天正文按 Markdown、普通代码围栏、HTML 片段和完整 HTML 文档分段呈现；完整文档保留自己的 `head/body`。内联代码和未闭合围栏中的 HTML 不执行，生成流式期间不创建 HTML WebView。HTML / CSS 在 WebView 中按作者样式呈现；允许脚本后可自动测量高度。
 - `TavernHelper` / `SillyTavern.getContext` 的上下文、变量、消息读写、发送和生成提供基础接口。
 - 已抽取原版 MVU 数据接口和 Zod schema 事件钩子，使用本地 Zod 4.4.3。支持会话和消息候选作用域、`mag_*` 事件值与旧名称别名；`setMvuVariable` 与原版一样修改传入的数据，保存需要显式调用替换接口。变量写入落盘成功后返回，旧变量或旧候选写入会被拒绝；其他变量作用域会明确报错。
-- 尚未接通完整 MVU 命令解析、InitVar 加载/历史重放和宿主生成后的 Zod 事件链。`parseMessage` / `reloadInitVar` 明确拒绝；`waitGlobalInitialized('Mvu')` 目前只确认接口存在，不能作为原版时间线完成重放的保证。
+- Kotlin 侧已有 InitVar 加载、历史/候选重放以及 `parseMessage` / `reloadInitVar` 宿主路径；完整 MVU 命令和宿主生成后的 Zod 校验事件链仍未对齐。`waitGlobalInitialized('Mvu')` 等待页面快照同步，不能作为全部原版生命周期已对齐的保证。
 - 本地 EJS 3.1.10 引擎支持允许脚本的消息 HTML 模板，以及 `EjsTemplate.render/evaluate`、条件、异步模板、`getvar/setvar` 和错误回退。显示渲染的变量变化只返回到结果，不隐式保存；卡片可显式提交 `result.variables`。世界书/预设及生成前后的模板阶段尚未接通；文件模板需要显式 includer。
 - `scripts/openai.js` 和 `scripts/utils.js` 使用恢复的前端模块，并通过残叙·残念适配当前会话与生成接口。生成请求只适配现有消息数组；中途取消信号和全部原版选项尚未接入。
 - `scripts/world-info.js` 使用恢复的前端模块；已接入资料库世界书读取、创建、保存、删除及当前角色主/附加世界书绑定。脚本创建的世界书限定在当前会话，导入备份时会重新关联。返回的条目仅适配常见字段，尚未完整复刻所有原版字段和嵌入式世界书。
@@ -55,7 +55,9 @@ JSON Patch 的 `path` 及 move/copy 的 `from` 必须提供字符串；非法输
 - `scripts/preset-manager.js` 使用恢复的前端模块；可列出、按需加载和为当前会话选择预设。同步读取预设内容需要先异步 `loadPreset`；选择方法是异步的。脚本创建、修改、删除预设尚未接入。
 - 根路径 `/script.js` 也提供恢复模块；仅实现其所依赖的部分宿主行为，并非完整复刻整个前端运行环境。
 - 世界书或预设修改在生成期间被拒绝；脚本修改在写入本地资料后才报告成功。
-- 消息脚本按文档顺序加载，关闭页面时清理待处理请求和事件；这是消息页生命周期，独立角色脚本树和会话级脚本管理器仍待接入。不支持原版所有第三方扩展或任意外部依赖。
+- 消息脚本按文档顺序加载，关闭页面时清理待处理请求和事件。另有一个会话级隐藏 WebView 管理角色独立脚本树，每个角色脚本在自己的隐藏 iframe 中运行：支持常见 modern/legacy 结构、禁用文件夹、按序加载和会话内逐项停用；需同时开启全局脚本与会话独立脚本开关。消息离屏不会重建会话脚本，关闭会话或更改脚本配置时释放运行环境。每脚本 iframe 隔离已完成源码接入，尚未构建或在设备上运行验证。
+- 会话脚本可监听 `generation_started`、`chat_completion_prompt_ready`、`generate_after_data`、`js_generation_started`、`js_stream_token_received_incrementally`、`js_stream_token_received_fully`、`message_received` 和 `generation_ended`。两个生成前事件分别通过 `chat` 和 `messages` 数组改写最终请求；生命周期和流事件按原版参数数组传递。消息接收事件仅在保存成功后派发；生成事件执行期间继续拒绝历史/变量写入与递归发送，避免状态交错。
+- 脚本宿主请求与事件有超时；初始化失败会记入 Android 日志，单个 iframe 的事件异常不会阻断其他脚本。生成前宿主事件校验失败时不发送该轮请求。停止会取消宿主等待并派发 `generation_stopped`；已运行的 JavaScript 异步副作用仍需脚本配合停止。角色脚本按钮已接入输入区，运行时广播会依会话脚本、消息索引和 HTML 片段顺序分发给当前已挂载的卡片。所有 DOM / 生命周期语义、全部依赖库及第三方扩展仍未完整接通。
 - 脚本默认关闭。开启后卡片可以联网，也可以通过有限接口调用用户配置的模型服务。不能读取宿主 API 密钥或 Android 文件。
 
 复杂状态栏、互动卡、脚本驱动世界书和基于外部扩展的卡片仍是后续兼容工作的重点。
@@ -65,5 +67,7 @@ JSON Patch 的 `path` 及 move/copy 的 `from` 必须提供字符串；非法输
 本地 ONNX 支持 BERT WordPiece、`input_ids` / `attention_mask` / `token_type_ids` 的 INT64 输入，float 输出，CLS 或 mean pooling，归一化与余弦检索。不是通用所有 ONNX/tokenizer 引擎。远程使用 OpenAI 兼容 `/embeddings`。
 
 按模型/配置分开保存索引；文本变化以块哈希失效；近期原文不重复作为长期记忆注入。更换模型后重建对应索引。原备份的历史向量作为未知数据保存，不直接混用到新模型索引。
+
+每个会话可选择使用最近 1–30 条消息组成检索查询，默认 3 条；查询文本过长时先按字符保留末尾，本地分词仍受模型输入长度限制。先按相似度选择片段，再按聊天中的原始顺序注入。同一片段的不同分块也保持先后顺序。原版逐条查询再取最高相似度的行为尚未对齐。
 
 尚未在真机上执行模型推理或评估召回质量、耗时与内存占用。

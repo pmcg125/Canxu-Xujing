@@ -189,6 +189,19 @@ object PromptEngine {
         return OutputResult(updated.text, updated.variables, diagnostics.distinct())
     }
 
+    fun processEdit(text: String, state: AppState, session: ChatSession, message: ChatMessage): String {
+        val diagnostics = mutableListOf<String>()
+        val roles = session.roleIds.mapNotNull { id -> state.roles.find { it.id == id } }
+        val speaker = roles.find { it.id == message.speakerId } ?: roles.firstOrNull()
+        val macro = MacroProcessor(state, session, speaker, session.variables, diagnostics, Random((session.id + message.id + text).hashCode()))
+        val index = session.messages.indexOfFirst { it.id == message.id }
+        val depth = if (index < 0) 0 else (session.messages.lastIndex - index).coerceAtLeast(0)
+        val stage = if (message.role == "user") TextStage.INPUT else TextStage.OUTPUT
+        return RegexProcessor(state, session, roles, macro, diagnostics).apply(
+            text, stage, role = message.role, depth = depth, prompt = false, isEdit = true,
+        )
+    }
+
     fun displayText(text: String, state: AppState, session: ChatSession, role: String = "assistant", depth: Int = 0, processed: Boolean = false): String {
         val diagnostics = mutableListOf<String>()
         val roles = session.roleIds.mapNotNull { id -> state.roles.find { it.id == id } }

@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = 'D:\Roleplay\model-packages')
+﻿param([string]$OutputDirectory = 'D:\Roleplay\model-packages')
 $ErrorActionPreference = 'Stop'
 $revision = '75c43b069aac4d136ba6bc1122f995fedcfd2781'
 $mirror = "https://hf-mirror.com/Xenova/bge-small-zh-v1.5/resolve/$revision"

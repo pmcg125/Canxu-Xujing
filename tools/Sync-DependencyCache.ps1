@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SourceDirectory = 'D:\Roleplay\tooling\gradle-cache\caches\modules-2\files-2.1',
     [string]$RepositoryDirectory = 'D:\Roleplay\tooling\maven-cache'
 )

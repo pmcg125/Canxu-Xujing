@@ -12,7 +12,7 @@ async function main() {
     __XUJING_CONTEXT__: { variables: {}, sessionId: 's', characterId: 'role', worldbookNames: ['本地'], presets: [{id:'p1',name:'预设甲',enabled:true},{id:'p2',name:'预设乙',enabled:true}], activePresetId:'p1', name1: 'User', name2: 'Alice', chat: [{ role: 'user', content: 'hello' }] },
     setTimeout, clearTimeout, DOMException,
     document: { addEventListener() {} },
-    XujingBridge: { request(id, method, payload) {
+    XujingBridge: { request(runtimeToken, id, method, payload) {
       const parsed = JSON.parse(payload);
       calls.push({ method, payload: parsed });
       queueMicrotask(() => {

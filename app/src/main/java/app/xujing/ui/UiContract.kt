@@ -6,6 +6,8 @@ data class UiRuntime(
     val activeSessionId: String? = null, val generating: Boolean = false,
     val busy: Boolean = false, val status: String = "", val error: String? = null,
     val promptPreview: String? = null, val localModels: List<LocalModelPackage> = emptyList(),
+    val suggesting: Boolean = false, val suggestionSessionId: String? = null,
+    val suggestions: List<String> = emptyList(),
 )
 interface AppActions {
     fun openSession(id: String?)
@@ -38,4 +40,6 @@ interface AppActions {
     fun showPrompt()
     fun clearError()
     fun clearPrompt()
+    fun suggestReplies()
+    fun clearSuggestions()
 }

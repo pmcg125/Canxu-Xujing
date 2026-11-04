@@ -15,6 +15,7 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
     var draft by remember(session.id) { mutableStateOf(session) }
     var variables by remember(session.id) { mutableStateOf(AppJson.encodeToString(JsonObject.serializer(),session.variables)) }
     var history by remember(session.id) { mutableStateOf(session.extra["maxHistoryMessages"]?.jsonPrimitive?.intOrNull?.toString() ?: "40") }
+    var memoryQuery by remember(session.id) { mutableStateOf(((session.extra["memoryQueryMessages"] as? JsonPrimitive)?.intOrNull ?: 3).coerceIn(1,30).toString()) }
     var summaryInterval by remember(session.id) { mutableStateOf((session.extra["summaryInterval"] as? JsonPrimitive)?.intOrNull?.toString() ?: "10") }
     var summaryKeep by remember(session.id) { mutableStateOf((session.extra["summaryKeepMessages"] as? JsonPrimitive)?.intOrNull?.toString() ?: "12") }
     var fontSize by remember(session.id) { mutableFloatStateOf(session.extra["fontSize"]?.jsonPrimitive?.floatOrNull ?: state.preferences.fontSize) }
@@ -22,8 +23,8 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
     val selectedStyles=draft.extra.array("styleIds").map { it.jsonPrimitive.content }
     val selectedPersona=draft.extra.text("personaId").ifBlank { null }
     EditorScaffold("会话设置",onClose,onSave={
-        onSave(draft.copy(variables=parsedVariables.getOrThrow(),extra=JsonObject(draft.extra+mapOf("maxHistoryMessages" to JsonPrimitive(history.toInt()),"fontSize" to JsonPrimitive(fontSize),"summaryInterval" to JsonPrimitive(summaryInterval.toInt()),"summaryKeepMessages" to JsonPrimitive(summaryKeep.toInt())))))
-    },enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000) {
+        onSave(draft.copy(variables=parsedVariables.getOrThrow(),extra=JsonObject(draft.extra+mapOf("maxHistoryMessages" to JsonPrimitive(history.toInt()),"memoryQueryMessages" to JsonPrimitive(memoryQuery.toInt()),"fontSize" to JsonPrimitive(fontSize),"summaryInterval" to JsonPrimitive(summaryInterval.toInt()),"summaryKeepMessages" to JsonPrimitive(summaryKeep.toInt())))))
+    },enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (memoryQuery.toIntOrNull() ?: 0) in 1..30 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000) {
         OutlinedTextField(draft.title,{ draft=draft.copy(title=it) },label={ Text("会话名称") },singleLine=true,modifier=Modifier.fillMaxWidth())
         SectionTitle("参与角色")
         if(state.roles.isEmpty()) Text("请先创建或导入角色。")
@@ -46,6 +47,20 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
         EditorText("本会话的人设",draft.persona,4) { draft=draft.copy(persona=it) }
         HorizontalDivider()
         SectionTitle("提示词资料")
+        SettingSwitch("运行角色独立脚本","为此会话加载角色卡中的 TavernHelper 脚本；同时需要在全局设置允许角色卡脚本。",(draft.extra["sessionScriptsEnabled"] as? JsonPrimitive)?.booleanOrNull==true) {
+            draft=draft.copy(extra=JsonObject(draft.extra+("sessionScriptsEnabled" to JsonPrimitive(it))))
+        }
+        val scriptCount=app.xujing.core.compat.SessionScripts.collect(state,draft).size
+        Text("当前角色包含 $scriptCount 个已启用的独立脚本",style=MaterialTheme.typography.bodySmall)
+        if((draft.extra["sessionScriptsEnabled"] as? JsonPrimitive)?.booleanOrNull==true) {
+            val disabled=draft.extra.array("disabledSessionScriptIds").mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet()
+            app.xujing.core.compat.SessionScripts.collect(state,draft,includeDisabled=true).forEach { script ->
+                SettingSwitch(script.name,"在当前会话中启用",script.id !in disabled) { enabled ->
+                    val next=if(enabled) disabled-script.id else disabled+script.id
+                    draft=draft.copy(extra=JsonObject(draft.extra+("disabledSessionScriptIds" to JsonArray(next.map(::JsonPrimitive)))))
+                }
+            }
+        }
         ChoiceField("提示词预设",draft.presetId,state.library.filter { it.kind=="preset" && it.enabled }.map { it.id to it.name },"使用默认编排") { draft=draft.copy(presetId=it) }
         SettingSwitch("使用预设采样参数","启用后，预设中的温度、top_p、惩罚、输出上限等有效参数会覆盖聊天连接参数；摘要仍使用摘要连接参数。",(draft.extra["applyPresetSampling"] as? JsonPrimitive)?.booleanOrNull==true) {
             draft=draft.copy(extra=JsonObject(draft.extra+("applyPresetSampling" to JsonPrimitive(it))))
@@ -67,11 +82,18 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             OutlinedTextField(summaryKeep,{ summaryKeep=it.filter(Char::isDigit) },label={ Text("至少保留多少条近期原文（2–1000）") },singleLine=true,modifier=Modifier.fillMaxWidth())
         }
         SettingSwitch("启用长期语义记忆","使用设置中选定的本地或远程嵌入模型。",draft.memoryEnabled) { draft=draft.copy(memoryEnabled=it) }
+        OutlinedTextField(memoryQuery,{ memoryQuery=it.filter(Char::isDigit) },label={ Text("用最近多少条消息检索记忆（1–30）") },singleLine=true,modifier=Modifier.fillMaxWidth(),isError=(memoryQuery.toIntOrNull() ?: 0) !in 1..30,supportingText={ Text("默认为 3 条；查询过长时会受模型输入长度限制。") })
         OutlinedButton(onClick=onModels) { Icon(Icons.Outlined.Memory,null); Spacer(Modifier.width(8.dp)); Text("嵌入模型与检索设置") }
         EditorText("剧情摘要",draft.summary,5) { draft=draft.copy(summary=it) }
         OutlinedTextField(variables,{ variables=it },label={ Text("剧情变量 JSON") },minLines=5,isError=parsedVariables.isFailure,modifier=Modifier.fillMaxWidth(),supportingText={ if(parsedVariables.isFailure) Text("需要有效的 JSON 对象") })
         HorizontalDivider()
         SectionTitle("阅读外观")
+        Text("背景图片可在聊天菜单中选择。",style=MaterialTheme.typography.bodySmall)
+        if(draft.extra.text("backgroundImage").isNotBlank()) TextButton(onClick={ draft=draft.copy(extra=JsonObject(draft.extra-"backgroundImage")) }) { Text("移除背景图片") }
+        val opacity=((draft.extra["bubbleOpacity"] as? JsonPrimitive)?.floatOrNull ?: 1f).coerceIn(0.1f,1f)
+        Text("气泡不透明度 ${(opacity*100).toInt()}%")
+        Slider(value=opacity,onValueChange={ draft=draft.copy(extra=JsonObject(draft.extra+("bubbleOpacity" to JsonPrimitive(it)))) },valueRange=0.1f..1f)
+        ChoiceField("气泡样式",draft.extra.text("bubbleStyle","rounded"),listOf("rounded" to "圆润","square" to "方角")) { value -> draft=draft.copy(extra=JsonObject(draft.extra+("bubbleStyle" to JsonPrimitive(value ?: "rounded")))) }
         ChoiceField("显示模式",draft.readingMode,listOf("reading" to "阅读模式","bubble" to "气泡模式")) { draft=draft.copy(readingMode=it ?: "reading") }
         Text("字号 ${fontSize.toInt()}")
         Slider(value=fontSize,onValueChange={ fontSize=it },valueRange=13f..28f,steps=14)

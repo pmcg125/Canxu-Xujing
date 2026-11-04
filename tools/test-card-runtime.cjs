@@ -4,12 +4,15 @@ async function main(){
   const initial={sessionId:'s',messageId:'m',variables:{stat_data:{hp:2},unknown:'retain'},chat:[{id:'m',message_id:0,swipe_id:0,variables:{stat_data:{hp:1}}}]};
   let rejectWrite=false, hostVariables=structuredClone(initial.variables);
   const w={console,URL,setTimeout,clearTimeout,DOMException,__XUJING_CONTEXT__:initial,
-    document:{addEventListener(){}},XujingBridge:{request(id,method,raw){
+    document:{addEventListener(){}},XujingBridge:{request(runtimeToken,id,method,raw){
       const p=JSON.parse(raw);
       queueMicrotask(()=>{
+        // Bridge calls that are not session-variable writes must not be answered with the variable payload.
+        if(method==='broadcastRuntimeEvent') return w.__xujingReply(id,{value:true,args:p.args});
+        if(method==='parseMvuMessage') return w.__xujingReply(id,{value:{parsed:'QA_PARSE_OK'}});
         if(rejectWrite) return w.__xujingReply(id,{error:'disk failure'});
-        if(p.option.type==='chat'){
-          if(JSON.stringify(p.expected)!==JSON.stringify(hostVariables)) return w.__xujingReply(id,{error:'stale'});
+        if(p.option?.type==='chat'){
+          if(p.expected!==undefined && JSON.stringify(p.expected)!==JSON.stringify(hostVariables)) return w.__xujingReply(id,{error:'stale'});
           hostVariables=p.variables;
         }
         w.__xujingReply(id,{value:p.variables});
@@ -49,8 +52,10 @@ async function main(){
   assert.equal(w.getVariables().stat_data.hp,6);assert.equal(events,1);
   await w.Mvu.replaceCurrentMvuData({stat_data:{hp:4}});
   assert.equal(w.Mvu.getCurrentMvuData().stat_data.hp,4);assert.equal(hostVariables.stat_data.hp,6);
+  w.__xujingUpdate(initial); // stateSynchronized is only set by the host snapshot update
   assert.equal((await w.waitGlobalInitialized('Mvu')),w.Mvu);
-  await assert.rejects(()=>w.Mvu.parseMessage('text',{}),/not yet available/);
+  const qaParsed=await w.Mvu.parseMessage('text',{});
+  assert.equal(qaParsed.parsed,'QA_PARSE_OK'); // host now implements parseMvuMessage; __rpc unwraps {value}
   console.log('Card runtime checks passed: original vendors/MVU hooks, EJS, scopes and failed writes.');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

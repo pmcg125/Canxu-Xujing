@@ -29,7 +29,7 @@ class MainActivity:ComponentActivity() {
             XujingApp(state,runtime,controller)
         }
         lifecycleScope.launch { controller.effects.collect { effect -> when(effect) {
-            is UiEffect.Import -> { importKind=effect.kind; importFile.launch(arrayOf("*/*")) }
+            is UiEffect.Import -> { importKind=effect.kind; importFile.launch(if(effect.kind.startsWith("background:")) arrayOf("image/png","image/jpeg","image/webp") else arrayOf("*/*")) }
             is UiEffect.Export -> exportFile.launch(effect.name)
             is UiEffect.Browse -> runCatching { startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(effect.url))) }
         } } }

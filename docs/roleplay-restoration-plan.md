@@ -29,32 +29,32 @@
 
 ### 2.1 宏与预设：可立即定位的差异
 
-- 原版 `Oi()` 在双方可数值化时求和，否则拼接文本；残叙·残念 `addvar` 目前只计算数值。多项文风拼接会受影响。[原版字符串/数值累加](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:12028)，[现有宏实现](D:/Roleplay/Xujing/core/src/main/kotlin/app/xujing/core/engine/MacroProcessor.kt:74)。
-- 原版 `Pi/Ni/Ei` 识别宏节点、嵌套与配对结束标签，`Ti` 处理块级 `else`；残叙·残念主要匹配无花括号的宏体并重复展开。应对照 `setvar` 块、`if/else`、注释和嵌套参数，而不是仅增加几个名称。[原版宏解析](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:11949)，[块级 else](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:12234)。
-- 原版正则 `substituteRegex=2` 对宏值转义后再构造查找式；当前对模式 1/2 做相同展开。[原版正则路径](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:1169)，[现有正则路径](D:/Roleplay/Xujing/core/src/main/kotlin/app/xujing/core/engine/RegexProcessor.kt:44)。
-- `maxresponse` 等宏也应读实际生效的连接/预设参数，与上一轮已修正的上下文预算一致。[现有参数宏](D:/Roleplay/Xujing/core/src/main/kotlin/app/xujing/core/engine/MacroProcessor.kt:62)。
-- APK 已有约 1.23 MB、251 个提示词条目的默认预设，可作为复杂组合的兼容检查材料；不应直接启用全部条目或沿用其 30,000 输出 token 默认值。它不是新的模型能力。[默认预设资料](D:/REA-Android/targets/piupiu-source/apktool/assets/public/presets/default-global-preset.json)。
+- 原版 `Oi()` 在双方可数值化时求和，否则拼接文本；残叙·残念 `addvar` 目前只计算数值。多项文风拼接会受影响。[原版字符串/数值累加](../../PiuPiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:12028)，[现有宏实现](../core/src/main/kotlin/app/xujing/core/engine/MacroProcessor.kt:74)。
+- 原版 `Pi/Ni/Ei` 识别宏节点、嵌套与配对结束标签，`Ti` 处理块级 `else`；残叙·残念主要匹配无花括号的宏体并重复展开。应对照 `setvar` 块、`if/else`、注释和嵌套参数，而不是仅增加几个名称。[原版宏解析](../../PiuPiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:11949)，[块级 else](../../PiuPiu-source/frontend-readable/assets/c/ImageViewer-legacy-DD5gJaNv.js:12234)。
+- 原版正则 `substituteRegex=2` 对宏值转义后再构造查找式；当前对模式 1/2 做相同展开。[原版正则路径](../../PiuPiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:1169)，[现有正则路径](../core/src/main/kotlin/app/xujing/core/engine/RegexProcessor.kt:44)。
+- `maxresponse` 等宏也应读实际生效的连接/预设参数，与上一轮已修正的上下文预算一致。[现有参数宏](../core/src/main/kotlin/app/xujing/core/engine/MacroProcessor.kt:62)。
+- APK 已有约 1.23 MB、251 个提示词条目的默认预设，可作为复杂组合的兼容检查材料；不应直接启用全部条目或沿用其 30,000 输出 token 默认值。它不是新的模型能力。[默认预设资料](../../PiuPiu-source/apktool/assets/public/presets/default-global-preset.json)。
 
 ### 2.2 脚本与 MVU：最值得直接提取的区域
 
-- `Sd()` 由字面量和序列化会话数据构造运行时。30929 行包含事件系统；30934 行包含 MVU 事件名、`registerMvuSchema` 和 `safeParse`；30986 行提供消息、世界书、正则操作；30994 行提供提示注入、生成和取消；31035 行提供预设管理入口。[运行时构造入口](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:30900)。这些嵌入字符串必须用语法树/字面量解码工具提取，避免靠行号裁剪或执行整个 chunk。
-- 运行时已有 `options.hostApi[method]` 边界。宿主执行操作后刷新 frame 缓存，回传 `chatMessages`、`scopedVariables` 和 `worldbookContext`，可以替换成残叙·残念的宿主实现。[现成宿主接口](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:32604)。
-- 原版明确等待 InitVar/重放持久化、同步时间线后才视为 MVU 已初始化。残叙·残念当前在 `DOMContentLoaded` 就发送初始化事件，不能保证脚本拿到最终状态。[原版初始化约束](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:30921)，[残叙·残念初始化](D:/Roleplay/Xujing/app/src/main/assets/card-runtime.js:52)。
-- 原版内嵌 jQuery、Lodash、Vue、Pinia、Vue Router、Zod、YAML 的运行时字符串，装载点已找到。优先按卡片实际依赖提取，记录版本与许可头；不默认把全部库装入每条消息。[库装载点](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:31143)。
-- 不能把角色 JSON 内“保存了脚本树”当成“执行了脚本树”。需接入提取/规范化、启用过滤、加载顺序、按钮注册、销毁和状态保存。[脚本树规范化入口](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/tavernHelperScriptStorage-legacy-BVIVfja_.js:361)。
+- `Sd()` 由字面量和序列化会话数据构造运行时。30929 行包含事件系统；30934 行包含 MVU 事件名、`registerMvuSchema` 和 `safeParse`；30986 行提供消息、世界书、正则操作；30994 行提供提示注入、生成和取消；31035 行提供预设管理入口。[运行时构造入口](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:30900)。这些嵌入字符串必须用语法树/字面量解码工具提取，避免靠行号裁剪或执行整个 chunk。
+- 运行时已有 `options.hostApi[method]` 边界。宿主执行操作后刷新 frame 缓存，回传 `chatMessages`、`scopedVariables` 和 `worldbookContext`，可以替换成残叙·残念的宿主实现。[现成宿主接口](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:32604)。
+- 原版明确等待 InitVar/重放持久化、同步时间线后才视为 MVU 已初始化。残叙·残念当前在 `DOMContentLoaded` 就发送初始化事件，不能保证脚本拿到最终状态。[原版初始化约束](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:30921)，[残叙·残念初始化](../app/src/main/assets/card-runtime.js:52)。
+- 原版内嵌 jQuery、Lodash、Vue、Pinia、Vue Router、Zod、YAML 的运行时字符串，装载点已找到。优先按卡片实际依赖提取，记录版本与许可头；不默认把全部库装入每条消息。[库装载点](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:31143)。
+- 不能把角色 JSON 内“保存了脚本树”当成“执行了脚本树”。需接入提取/规范化、启用过滤、加载顺序、按钮注册、销毁和状态保存。[脚本树规范化入口](../../PiuPiu-source/frontend-readable/assets/c/tavernHelperScriptStorage-legacy-BVIVfja_.js:361)。
 
 ### 2.3 EJS、提示词与世界书
 
-- 本地代码包含 EJS 3.1.10 及许可头；包装层支持条件指令、异步模板、`getvar/setvar`、变量结果。只替换 `<%=...%>` 无法覆盖这些行为。[EJS 引擎](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:27398)，[模板包装](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:28118)。
-- 主聊天构造提示词后还会调用 `chat_completion_prompt_ready`、`generate_after_data`，允许扩展改写实际发出的 messages；残叙·残念目前没有这一整条钩子链。[主聊天钩子顺序](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:27025)。需明确每个阶段的输入、可写内容及取消语义，防止变量更新执行两次。
-- 世界书原版有 `useGroupScoring`、`matchCharacterDepthPrompt`、`matchCreatorNotes` 等实际计算路径；当前 Kotlin 实现尚未逐项覆盖。[组评分](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:20817)，[附加扫描来源](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:22544)。
-- 群聊已找到 `targetRoleId/@姓名` 识别及 `group_targeted_reply/group_general_reply` 提示词分支，应先还原这两条路径。当前证据不足以把“自动连续生成多名成员回复”列为原版已确认能力。[群聊目标识别](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:5251)，[群聊提示分支](D:/REA-Android/targets/piupiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:5343)。
+- 本地代码包含 EJS 3.1.10 及许可头；包装层支持条件指令、异步模板、`getvar/setvar`、变量结果。只替换 `<%=...%>` 无法覆盖这些行为。[EJS 引擎](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:27398)，[模板包装](../../PiuPiu-source/frontend-readable/assets/c/GroupMemberSelector-legacy-BIJ8h7lR.js:28118)。
+- 主聊天构造提示词后还会调用 `chat_completion_prompt_ready`、`generate_after_data`，允许扩展改写实际发出的 messages；残叙·残念目前没有这一整条钩子链。[主聊天钩子顺序](../../PiuPiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:27025)。需明确每个阶段的输入、可写内容及取消语义，防止变量更新执行两次。
+- 世界书原版有 `useGroupScoring`、`matchCharacterDepthPrompt`、`matchCreatorNotes` 等实际计算路径；当前 Kotlin 实现尚未逐项覆盖。[组评分](../../PiuPiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:20817)，[附加扫描来源](../../PiuPiu-source/frontend-readable/assets/e/index-legacy-B0tYRju5.js:22544)。
+- 群聊已找到 `targetRoleId/@姓名` 识别及 `group_targeted_reply/group_general_reply` 提示词分支，应先还原这两条路径。当前证据不足以把“自动连续生成多名成员回复”列为原版已确认能力。[群聊目标识别](../../PiuPiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:5251)，[群聊提示分支](../../PiuPiu-source/frontend-readable/assets/c/ChatView-legacy-C8UPOooP.js:5343)。
 
 ### 2.4 可以复制的小模块仍需要真实宿主
 
 `scripts/world-info.js` 转接 `TavernHelper`，`preset-manager.js` 转接当前上下文，`openai.js` 提供 Message/MessageCollection/promptManager 等类型与接口。复制它们能解决导入路径和对象形状，无法自动实现读写、存储或生成。`script.js` 的空闲 `streamingProcessor=null` 也是兼容声明，不是原版完整流处理器。
 
-[world-info](D:/REA-Android/targets/piupiu-source/frontend-readable/scripts/world-info.js:1)、[openai](D:/REA-Android/targets/piupiu-source/frontend-readable/scripts/openai.js:1)、[preset-manager](D:/REA-Android/targets/piupiu-source/frontend-readable/scripts/preset-manager.js:1)、[根模块](D:/REA-Android/targets/piupiu-source/frontend-readable/script.js:1)。
+[world-info](../../PiuPiu-source/frontend-readable/scripts/world-info.js:1)、[openai](../../PiuPiu-source/frontend-readable/scripts/openai.js:1)、[preset-manager](../../PiuPiu-source/frontend-readable/scripts/preset-manager.js:1)、[根模块](../../PiuPiu-source/frontend-readable/script.js:1)。
 
 ## 3. 建议的宿主结构
 

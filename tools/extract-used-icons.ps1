@@ -1,4 +1,4 @@
-param([string]$SourceArchive = 'D:\Roleplay\tooling\material-icons-extended-android-1.7.8-sources.jar')
+﻿param([string]$SourceArchive = 'D:\Roleplay\tooling\material-icons-extended-android-1.7.8-sources.jar')
 $ErrorActionPreference = 'Stop'
 $projectDirectory = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $expectedHash = 'fd5e20a9a49831a8c9ce04b7012d1ea5ff755a7c'

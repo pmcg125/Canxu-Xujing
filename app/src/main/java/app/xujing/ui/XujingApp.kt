@@ -31,6 +31,7 @@ fun XujingApp(state: AppState, runtime: UiRuntime, actions: AppActions) {
         var showCreate by rememberSaveable { mutableStateOf(false) }
         var models by rememberSaveable { mutableStateOf(false) }
         val session = state.sessions.firstOrNull { it.id == runtime.activeSessionId }
+        session?.let { app.xujing.runtime.SessionScriptRuntime(state,it) }
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(runtime.status) { if (runtime.status.isNotBlank() && !runtime.generating) snackbar.showSnackbar(runtime.status) }
         BackHandler(enabled = roleEditor != null || documentEditor != null || connectionEditor != null || models || session != null) {
@@ -115,6 +116,7 @@ private fun RolesScreen(state: AppState, actions: AppActions, onEdit: (RoleCard)
     Column {
         OutlinedTextField(value = search, onValueChange = { search = it }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), placeholder = { Text("搜索角色") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true)
         val roles = state.roles.filter { it.name.contains(search, true) || it.description.contains(search, true) }
+            .sortedByDescending { (it.raw["xujing_pinned"] as? kotlinx.serialization.json.JsonPrimitive)?.content == "true" }
         if (state.roles.isEmpty()) EmptyState(Icons.Outlined.People, "为故事选择主角", "支持编辑角色设定、开场白和对话示例，也可导入角色卡 PNG 或 JSON。", "创建角色", onCreate)
         else if (roles.isEmpty()) EmptyState(Icons.Outlined.SearchOff, "没有匹配的角色", "换一个关键词试试。")
         else LazyColumn(contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 100.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -131,6 +133,11 @@ private fun RolesScreen(state: AppState, actions: AppActions, onEdit: (RoleCard)
                             Box {
                                 IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "角色操作") }
                                 DropdownMenu(menu, { menu = false }) {
+                                    val pinned = (role.raw["xujing_pinned"] as? kotlinx.serialization.json.JsonPrimitive)?.content == "true"
+                                    DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶角色") }, onClick = {
+                                        menu = false
+                                        actions.saveRole(role.copy(raw = kotlinx.serialization.json.JsonObject(role.raw + ("xujing_pinned" to kotlinx.serialization.json.JsonPrimitive(!pinned)))))
+                                    })
                                     DropdownMenuItem(text = { Text("编辑") }, onClick = { menu = false; onEdit(role) })
                                     DropdownMenuItem(text = { Text("复制角色") }, onClick = { menu = false; onEdit(role.copy(id = newId(), name = "${role.name} 副本")) })
                                     DropdownMenuItem(text = { Text("导出角色卡") }, onClick = { menu = false; actions.requestExport("role", role.id) })
