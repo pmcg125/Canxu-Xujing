@@ -97,8 +97,18 @@ class ApiClient(private val secrets: SecretVault) {
             full.toString()
         }
     }
-    suspend fun embed(connection:ApiConnection,model:String,texts:List<String>):List<FloatArray> = withContext(Dispatchers.IO) {
-        val payload=buildJsonObject { put("model",model.ifBlank { connection.model }); put("input",JsonArray(texts.map(::JsonPrimitive))); put("encoding_format","float") }
+    suspend fun models(connection:ApiConnection,apiKey:String?=null):List<String> = withContext(Dispatchers.IO) {
+        val builder=Request.Builder().url(endpoint(connection.baseUrl,"models")).header("Accept","application/json").get()
+        val key=apiKey?.takeIf(String::isNotBlank) ?: secrets.get(connection.id)
+        if(key.isNotBlank()) builder.header("Authorization","Bearer $key")
+        connection.headers.forEach { (k,v) -> if(k.isNotBlank()) builder.header(k,v) }
+        withResponse(builder.build()) { response ->
+            if(!response.isSuccessful) throw IOException("模型列表 HTTP ${response.code}：${response.body?.string().orEmpty().take(600)}")
+            val json=AppJson.parseToJsonElement(response.body?.string() ?: error("模型列表响应为空")).jsonObject
+            json.array("data").mapNotNull { item -> (item as? JsonObject)?.text("id")?.takeIf(String::isNotBlank) }.sorted()
+        }
+    }
+    suspend fun embed(connection:ApiConnection,model:String,texts:List<String>):List<FloatArray> = withContext(Dispatchers.IO) {        val payload=buildJsonObject { put("model",model.ifBlank { connection.model }); put("input",JsonArray(texts.map(::JsonPrimitive))); put("encoding_format","float") }
         withResponse(request(connection,endpoint(connection.baseUrl,"embeddings"),payload)) { response ->
             if(!response.isSuccessful) throw IOException("Embeddings HTTP ${response.code}：${response.body?.string().orEmpty().take(800)}")
             val data=AppJson.parseToJsonElement(response.body?.string() ?: error("向量响应为空")).jsonObject.array("data")

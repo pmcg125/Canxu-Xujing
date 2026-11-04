@@ -62,8 +62,21 @@ internal object MessageContentParser {
             lineStart = close.next
         }
         appendMixed(result, source.substring(cursor), allowHtml)
-        return result
+        return trimSegmentBoundaries(result)
     }
+
+    /**
+     * Drop the blank lines that sit between a Markdown run and an HTML/Code segment.
+     * Without this a one-line HTML card keeps a full paragraph of empty space above and below.
+     */
+    private fun trimSegmentBoundaries(segments: List<MessageSegment>): List<MessageSegment> =
+        segments.mapIndexed { index, segment ->
+            if (segment !is MessageSegment.Markdown) return@mapIndexed segment
+            var text = segment.source
+            if (index > 0 && segments[index - 1] !is MessageSegment.Markdown) text = text.trimStart('\n', '\r')
+            if (index < segments.lastIndex && segments[index + 1] !is MessageSegment.Markdown) text = text.trimEnd('\n', '\r')
+            if (text == segment.source) segment else MessageSegment.Markdown(text)
+        }.filterNot { it is MessageSegment.Markdown && it.source.isEmpty() }
 
     private fun appendMixed(result: MutableList<MessageSegment>, source: String, allowHtml: Boolean) {
         if (source.isEmpty()) return

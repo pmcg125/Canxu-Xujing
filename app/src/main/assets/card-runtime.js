@@ -152,6 +152,9 @@
   window.eventEmitAndWait=window.eventEmit;
   window.__xujingSessionEvent=async(id,name,payload)=>{
     const multiple=Array.isArray(payload),args=multiple?payload:[payload];
+    // PiuPiu passes generate_after_data as { prompt, dryRun }; keep prompt as a live alias of messages.
+    if(name==='generate_after_data'&&args[0]&&typeof args[0]==='object'&&args[0].messages&&!Object.prototype.hasOwnProperty.call(args[0],'prompt'))
+      Object.defineProperty(args[0],'prompt',{enumerable:true,configurable:true,get:()=>args[0].messages,set:value=>{args[0].messages=value;}});
     window.__xujingHostEventDepth++;
     try {
       await eventEmit(name,...args);

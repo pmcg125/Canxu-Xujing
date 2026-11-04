@@ -41,11 +41,11 @@ fun XujingApp(state: AppState, runtime: UiRuntime, actions: AppActions) {
             when {
                 roleEditor != null -> RoleEditor(roleEditor!!, onClose = { roleEditor = null }, onSave = { actions.saveRole(it); roleEditor = null })
                 documentEditor != null -> DocumentEditor(documentEditor!!, onClose = { documentEditor = null }, onSave = { actions.saveLibrary(it); documentEditor = null })
-                connectionEditor != null -> ConnectionEditor(connectionEditor!!, onClose = { connectionEditor = null }, onSave = { connection, key -> actions.saveConnection(connection, key); connectionEditor = null })
+                connectionEditor != null -> ConnectionEditor(connectionEditor!!, runtime, actions, onClose = { connectionEditor = null }, onSave = { connection, key -> actions.saveConnection(connection, key); connectionEditor = null })
                 models -> ModelSettings(state, runtime, actions, onClose = { models = false })
                 session != null -> ChatScreen(state, runtime, actions, session)
                 else -> Scaffold(
-                    topBar = { TopAppBar(title = { Column { Text(when (screen) { "roles" -> "角色"; "library" -> "资料库"; "settings" -> "设置"; else -> "残叙·残念" }); if (screen == "sessions") Text("让故事在这里延续", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
+                    topBar = { TopAppBar(title = { Column { Text(when (screen) { "roles" -> "角色"; "library" -> "资料库"; "settings" -> "设置"; else -> "残叙" }); if (screen == "sessions") Text("让故事在这里延续", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
                         if (screen != "settings") IconButton(onClick = { actions.requestImport(if (screen == "roles") "role" else "auto") }) { Icon(Icons.Outlined.FileOpen, "导入资料") }
                     }) },
                     bottomBar = {

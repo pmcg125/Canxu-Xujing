@@ -283,9 +283,9 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 var build=if(summaryWarning==null) composed else composed.copy(diagnostics=composed.diagnostics+summaryWarning)
                 SessionHooks.sync(state.value,prepared)
                 SessionHooks.emit(sessionId,"generation_started",JsonPrimitive(mode))
-                val promptEvent=SessionHooks.emit(sessionId,"chat_completion_prompt_ready",buildJsonObject { put("chat",AppJson.encodeToJsonElement(build.messages)) })
+                val promptEvent=SessionHooks.emit(sessionId,"chat_completion_prompt_ready",buildJsonObject { put("chat",AppJson.encodeToJsonElement(build.messages)); put("dryRun",JsonPrimitive(false)) })
                 val chat=(promptEvent as? JsonObject)?.get("chat") as? JsonArray ?: error("提示词事件必须保留 chat 消息数组")
-                val dataEvent=SessionHooks.emit(sessionId,"generate_after_data",buildJsonObject { put("messages",chat) })
+                val dataEvent=SessionHooks.emit(sessionId,"generate_after_data",buildJsonObject { put("messages",chat); put("dryRun",JsonPrimitive(false)) })
                 val messages=(dataEvent as? JsonObject)?.get("messages") as? JsonArray ?: error("生成事件必须保留 messages 消息数组")
                 val outgoing=AppJson.decodeFromJsonElement<List<PromptMessage>>(messages)
                 require(outgoing.isNotEmpty() && outgoing.all { it.role in setOf("system","developer","user","assistant") }) { "脚本返回了无效的提示词消息" }
@@ -460,6 +460,19 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         suggestionVersion++
         suggestionJob?.cancel()
         _runtime.update { it.copy(suggesting=false,suggestions=emptyList(),suggestionSessionId=null) }
+    }
+    override fun fetchModels(connection: ApiConnection, apiKey: String?) {
+        if (runtime.value.fetchingModels) return
+        viewModelScope.launch {
+            _runtime.update { it.copy(fetchingModels = true) }
+            try {
+                val models = withContext(Dispatchers.IO) { api.models(connection, apiKey) }
+                require(models.isNotEmpty()) { "服务未返回任何模型" }
+                _runtime.update { it.copy(modelOptions = models, modelOptionsConnectionId = connection.id) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error(e) }
+            finally { _runtime.update { it.copy(fetchingModels = false) } }
+        }
     }
     override fun suggestReplies() {
         val session=active() ?: return

@@ -21,57 +21,58 @@ internal fun SettingsScreen(state: AppState, runtime: UiRuntime, actions: AppAct
     var name by remember(state.preferences.userName) { mutableStateOf(state.preferences.userName) }
     var persona by remember(state.preferences.persona) { mutableStateOf(state.preferences.persona) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionTitle("外观", "MD3 应用界面；角色卡的 HTML 与 CSS 保留作者样式。")
-        ChoiceField("主题", state.preferences.darkMode, listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"), onChoose = { actions.savePreferences(state.preferences.copy(darkMode = it ?: "system")) })
-        SettingSwitch("系统动态配色", "Android 12 及以上可使用壁纸配色。", state.preferences.dynamicColor) { actions.savePreferences(state.preferences.copy(dynamicColor = it)) }
-        Text("默认正文字号 ${state.preferences.fontSize.toInt()}", style = MaterialTheme.typography.bodyLarge)
-        Slider(value = state.preferences.fontSize, onValueChange = { actions.savePreferences(state.preferences.copy(fontSize = it)) }, valueRange = 13f..26f, steps = 12)
-        HorizontalDivider()
-        SectionTitle("默认用户人设", "新会话使用这里的设定，可在每个会话中单独修改。")
-        OutlinedTextField(name, { name = it }, label = { Text("称呼") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        EditorText("人设描述", persona) { persona = it }
-        OutlinedButton(onClick = { actions.savePreferences(state.preferences.copy(userName = name.ifBlank { "我" }, persona = persona)) }, enabled = name != state.preferences.userName || persona != state.preferences.persona) { Text("保存默认人设") }
-        HorizontalDivider()
-        SectionTitle("API 连接", "聊天与剧情摘要使用可配置的 OpenAI 兼容接口。")
-        state.connections.forEach { connection ->
-            OutlinedCard(onClick = { onConnection(connection) }, modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Api, null, tint = MaterialTheme.colorScheme.primary)
-                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) { Text(connection.name, style = MaterialTheme.typography.titleSmall); Text(connection.model, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    IconButton(onClick = { deleting = connection }) { Icon(Icons.Outlined.DeleteOutline, "删除连接") }
+        CollapsibleSection("外观", "MD3 应用界面；角色卡的 HTML 与 CSS 保留作者样式。", initiallyExpanded = true) {
+            ChoiceField("主题", state.preferences.darkMode, listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"), onChoose = { actions.savePreferences(state.preferences.copy(darkMode = it ?: "system")) })
+            SettingSwitch("系统动态配色", "Android 12 及以上可使用壁纸配色。", state.preferences.dynamicColor) { actions.savePreferences(state.preferences.copy(dynamicColor = it)) }
+            Text("默认正文字号 ${state.preferences.fontSize.toInt()}", style = MaterialTheme.typography.bodyLarge)
+            Slider(value = state.preferences.fontSize, onValueChange = { actions.savePreferences(state.preferences.copy(fontSize = it)) }, valueRange = 13f..26f, steps = 12)
+        }
+        CollapsibleSection("默认用户人设", "新会话使用这里的设定，可在每个会话中单独修改。") {
+            OutlinedTextField(name, { name = it }, label = { Text("称呼") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            EditorText("人设描述", persona) { persona = it }
+            OutlinedButton(onClick = { actions.savePreferences(state.preferences.copy(userName = name.ifBlank { "我" }, persona = persona)) }, enabled = name != state.preferences.userName || persona != state.preferences.persona) { Text("保存默认人设") }
+        }
+        CollapsibleSection("API 连接", "支持多个 OpenAI 兼容服务商；聊天与摘要可分别选择。", initiallyExpanded = true) {
+            state.connections.forEach { connection ->
+                OutlinedCard(onClick = { onConnection(connection) }, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Api, null, tint = MaterialTheme.colorScheme.primary)
+                        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) { Text(connection.name, style = MaterialTheme.typography.titleSmall); Text(connection.model, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { deleting = connection }) { Icon(Icons.Outlined.DeleteOutline, "删除连接") }
+                    }
+                }
+            }
+            OutlinedButton(onClick = { onConnection(ApiConnection()) }) { Icon(Icons.Outlined.Add, null); Text("添加 API 连接") }
+            ChoiceField("默认聊天连接", state.preferences.defaultConnectionId, state.connections.map { it.id to it.name }, "未设置") { actions.savePreferences(state.preferences.copy(defaultConnectionId = it)) }
+        }
+        CollapsibleSection("长期记忆") {
+            OutlinedCard(onClick = onModels, modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Memory, null, tint = MaterialTheme.colorScheme.primary)
+                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                        Text("嵌入模型与记忆检索", style = MaterialTheme.typography.titleMedium)
+                        Text(if (state.embedding.provider == "remote") "远程 Embeddings · ${state.embedding.remoteModel.ifBlank { "未配置模型" }}" else "本地模型 · ${runtime.localModels.firstOrNull { it.id == state.embedding.localModelId }?.name ?: "未配置"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(Icons.Outlined.ChevronRight, null)
                 }
             }
         }
-        OutlinedButton(onClick = { onConnection(ApiConnection()) }) { Icon(Icons.Outlined.Add, null); Text("添加 API 连接") }
-        ChoiceField("默认聊天连接", state.preferences.defaultConnectionId, state.connections.map { it.id to it.name }, "未设置") { actions.savePreferences(state.preferences.copy(defaultConnectionId = it)) }
-        HorizontalDivider()
-        SectionTitle("长期记忆")
-        OutlinedCard(onClick = onModels, modifier = Modifier.fillMaxWidth()) {
-            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Memory, null, tint = MaterialTheme.colorScheme.primary)
-                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    Text("嵌入模型与记忆检索", style = MaterialTheme.typography.titleMedium)
-                    Text(if (state.embedding.provider == "remote") "远程 Embeddings · ${state.embedding.remoteModel.ifBlank { "未配置模型" }}" else "本地模型 · ${runtime.localModels.firstOrNull { it.id == state.embedding.localModelId }?.name ?: "未配置"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Icon(Icons.Outlined.ChevronRight, null)
+        CollapsibleSection("角色卡执行", "角色卡脚本可以读取当前会话并修改变量，只对可信来源开启。") {
+            SettingSwitch("允许角色卡脚本", "仅为可信来源开启。角色卡脚本可能请求操作当前会话与剧情变量。", state.preferences.allowCardScripts) { actions.savePreferences(state.preferences.copy(allowCardScripts = it)) }
+        }
+        CollapsibleSection("导入与导出", "角色、世界书、预设、正则、人设、文风、聊天与 PiuPiu 备份分别保留其格式。") {
+            OutlinedButton(onClick = { actions.requestImport("auto") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(8.dp)); Text("导入角色或资料") }
+            OutlinedButton(onClick = { actions.requestImport("backup") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FolderZip, null); Spacer(Modifier.width(8.dp)); Text("导入 PiuPiu / 残叙备份") }
+            OutlinedButton(onClick = { actions.requestExport("backup") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.SaveAlt, null); Spacer(Modifier.width(8.dp)); Text("导出角色与会话备份") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { actions.requestImport("settings") }, modifier = Modifier.weight(1f)) { Text("导入设置") }
+                OutlinedButton(onClick = { actions.requestExport("settings") }, modifier = Modifier.weight(1f)) { Text("导出设置") }
             }
         }
-        HorizontalDivider()
-        SectionTitle("角色卡执行")
-        SettingSwitch("允许角色卡脚本", "仅为可信来源开启。角色卡脚本可能请求操作当前会话与剧情变量。", state.preferences.allowCardScripts) { actions.savePreferences(state.preferences.copy(allowCardScripts = it)) }
-        HorizontalDivider()
-        SectionTitle("导入与导出", "角色、世界书、预设、正则、人设、文风、聊天与 PiuPiu 备份分别保留其格式。")
-        OutlinedButton(onClick = { actions.requestImport("auto") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FileOpen, null); Spacer(Modifier.width(8.dp)); Text("导入角色或资料") }
-        OutlinedButton(onClick = { actions.requestImport("backup") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FolderZip, null); Spacer(Modifier.width(8.dp)); Text("导入 PiuPiu / 残叙·残念备份") }
-        OutlinedButton(onClick = { actions.requestExport("backup") }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.SaveAlt, null); Spacer(Modifier.width(8.dp)); Text("导出角色与会话备份") }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { actions.requestImport("settings") }, modifier = Modifier.weight(1f)) { Text("导入设置") }
-            OutlinedButton(onClick = { actions.requestExport("settings") }, modifier = Modifier.weight(1f)) { Text("导出设置") }
+        CollapsibleSection("关于残叙") {
+            Text("故事和资料保存在此设备。模型回复由你配置的服务提供；本地嵌入模型仅用于记忆检索。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("资料格式兼容与脚本执行兼容分别演进。请保留原始备份，复杂角色卡的呈现取决于支持的脚本接口。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        HorizontalDivider()
-        SectionTitle("关于残叙·残念")
-        Text("故事和资料保存在此设备。模型回复由你配置的服务提供；本地嵌入模型仅用于记忆检索。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text("资料格式兼容与脚本执行兼容分别演进。请保留原始备份，复杂角色卡的呈现取决于支持的脚本接口。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(24.dp))
     }
     deleting?.let { ConfirmDelete("连接「${it.name}」", "使用该连接的会话需要重新选择 API。", { deleting = null }, { actions.deleteConnection(it.id) }) }

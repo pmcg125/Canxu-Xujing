@@ -1,11 +1,15 @@
 package app.xujing.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -87,12 +91,23 @@ private fun templateFor(kind: String): String = when (kind) {
     else -> """{"name":"新文风","content":"在这里填写写作风格要求"}"""
 }.let { AppJson.encodeToString(JsonElement.serializer(), AppJson.parseToJsonElement(it)) }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun ConnectionEditor(connection: ApiConnection, onClose: () -> Unit, onSave: (ApiConnection, String?) -> Unit) {
+internal fun ConnectionEditor(connection: ApiConnection, runtime: UiRuntime, actions: AppActions, onClose: () -> Unit, onSave: (ApiConnection, String?) -> Unit) {
     var draft by remember(connection.id) { mutableStateOf(connection) }
     var key by remember(connection.id) { mutableStateOf("") }
     var keyChanged by remember(connection.id) { mutableStateOf(false) }
     var reveal by remember { mutableStateOf(false) }
+    var showModels by remember { mutableStateOf(false) }
+    val options = if (runtime.modelOptionsConnectionId == draft.id) runtime.modelOptions else emptyList()
+    LaunchedEffect(options) { if (options.isNotEmpty()) showModels = true }
+    val providers = listOf(
+        "OpenAI" to "https://api.openai.com/v1",
+        "DeepSeek" to "https://api.deepseek.com/v1",
+        "Moonshot" to "https://api.moonshot.cn/v1",
+        "智谱" to "https://open.bigmodel.cn/api/paas/v4",
+        "硅基流动" to "https://api.siliconflow.cn/v1",
+    )
     var headers by remember(connection.id) { mutableStateOf(AppJson.encodeToString(JsonObject.serializer(), JsonObject(connection.headers.mapValues { JsonPrimitive(it.value) }))) }
     var parameters by remember(connection.id) { mutableStateOf(AppJson.encodeToString(JsonObject.serializer(), connection.parameters)) }
     var context by remember(connection.id) { mutableStateOf(connection.contextTokens.toString()) }
@@ -102,9 +117,24 @@ internal fun ConnectionEditor(connection: ApiConnection, onClose: () -> Unit, on
     val valid = draft.name.isNotBlank() && validUrl && draft.model.isNotBlank() && parsedHeaders.isSuccess && parsedParameters.isSuccess && (context.toIntOrNull() ?: 0) > 0
     EditorScaffold("API 连接", onClose, onSave = { onSave(draft.copy(name = draft.name.trim(), baseUrl = draft.baseUrl.trim(), model = draft.model.trim(), headers = parsedHeaders.getOrThrow(), parameters = parsedParameters.getOrThrow(), contextTokens = context.toInt()), if (keyChanged) key else null) }, enabled = valid) {
         Text("适用于 OpenAI 兼容服务。请按服务商说明填写 URL、模型名称及请求头。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("常用服务商", style = MaterialTheme.typography.labelMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+            providers.forEach { (label, url) ->
+                AssistChip(onClick = { draft = draft.copy(baseUrl = url) }, label = { Text(label) })
+            }
+        }
         OutlinedTextField(draft.name, { draft = draft.copy(name = it) }, label = { Text("连接名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(draft.baseUrl, { draft = draft.copy(baseUrl = it) }, label = { Text("基础 URL 或完整端点") }, placeholder = { Text("https://example.com/v1") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), isError = draft.baseUrl.isNotBlank() && !validUrl, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(draft.model, { draft = draft.copy(model = it) }, label = { Text("模型 ID") }, placeholder = { Text("填写服务商提供的模型名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { actions.fetchModels(draft, if (keyChanged) key else null) }, enabled = validUrl && !runtime.fetchingModels) {
+                if (runtime.fetchingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Outlined.Refresh, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (runtime.fetchingModels) "拉取中…" else "拉取模型列表")
+            }
+            if (options.isNotEmpty()) TextButton(onClick = { showModels = true }) { Text("${options.size} 个模型") }
+        }
         OutlinedTextField(key, { key = it; keyChanged = true }, label = { Text("API 密钥") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
             visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = { IconButton(onClick = { reveal = !reveal }) { Icon(if (reveal) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, if (reveal) "隐藏密钥" else "显示密钥") } },
@@ -118,4 +148,11 @@ internal fun ConnectionEditor(connection: ApiConnection, onClose: () -> Unit, on
         OutlinedTextField(parameters, { parameters = it }, modifier = Modifier.fillMaxWidth(), minLines = 6, textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), isError = parsedParameters.isFailure, supportingText = { if (parsedParameters.isFailure) Text("参数必须是有效的 JSON 对象") })
         Spacer(Modifier.height(24.dp))
     }
+    if (showModels) AlertDialog(onDismissRequest = { showModels = false }, title = { Text("选择模型") }, text = {
+        LazyColumn(Modifier.heightIn(max = 420.dp)) {
+            items(options) { id ->
+                Text(id, modifier = Modifier.fillMaxWidth().clickable { draft = draft.copy(model = id); showModels = false }.padding(vertical = 10.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }, confirmButton = { TextButton(onClick = { showModels = false }) { Text("关闭") } })
 }

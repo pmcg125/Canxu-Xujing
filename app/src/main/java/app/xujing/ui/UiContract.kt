@@ -8,6 +8,8 @@ data class UiRuntime(
     val promptPreview: String? = null, val localModels: List<LocalModelPackage> = emptyList(),
     val suggesting: Boolean = false, val suggestionSessionId: String? = null,
     val suggestions: List<String> = emptyList(),
+    val fetchingModels: Boolean = false, val modelOptions: List<String> = emptyList(),
+    val modelOptionsConnectionId: String? = null,
 )
 interface AppActions {
     fun openSession(id: String?)
@@ -42,4 +44,5 @@ interface AppActions {
     fun clearPrompt()
     fun suggestReplies()
     fun clearSuggestions()
+    fun fetchModels(connection: ApiConnection, apiKey: String?)
 }

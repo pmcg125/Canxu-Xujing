@@ -7,7 +7,10 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.ui.text.withStyle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.io.File
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -48,7 +52,7 @@ import app.xujing.runtime.SessionHooks
 import app.xujing.core.engine.PromptEngine
 import kotlinx.serialization.json.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions, session: ChatSession) {
     var settings by rememberSaveable(session.id) { mutableStateOf(false) }
@@ -94,10 +98,18 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
         SessionSettings(session, state, onClose = { settings = false }, onSave = { actions.updateSession(it.copy(messages = session.messages)); settings = false }, onModels = { models = true })
         return
     }
+    var autoFollow by remember(session.id) { mutableStateOf(true) }
     LaunchedEffect(session.id) { if (session.messages.isNotEmpty()) listState.scrollToItem(session.messages.lastIndex) }
-    LaunchedEffect(session.messages.size, session.messages.lastOrNull()?.content?.length) {
-        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        if (session.messages.isNotEmpty() && !listState.isScrollInProgress && lastVisible >= session.messages.lastIndex - 2) listState.scrollToItem(session.messages.lastIndex)
+    // A newly appended message (send or generation placeholder) always takes the viewport.
+    LaunchedEffect(session.messages.lastOrNull()?.id) {
+        if (session.messages.isNotEmpty()) { autoFollow = true; listState.animateScrollToItem(session.messages.lastIndex) }
+    }
+    // While streaming keep the growing reply pinned, unless the reader scrolled away.
+    LaunchedEffect(session.messages.size, session.messages.lastOrNull()?.content?.length, runtime.generating) {
+        if (runtime.generating && autoFollow && session.messages.isNotEmpty()) listState.scrollToItem(session.messages.lastIndex)
+    }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) autoFollow = false }
     }
     LaunchedEffect(session.roleIds) { if (target !in session.roleIds) target = null }
     Box(Modifier.fillMaxSize().background(background)) {
@@ -131,8 +143,8 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
         bottomBar = {
             Surface(tonalElevation = 2.dp) {
                 Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    if (scriptButtons.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        items(scriptButtons, key = { it.scriptId + ":" + it.name }) { button ->
+                    if (scriptButtons.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        scriptButtons.forEach { button ->
                             SuggestionChip(
                                 onClick = { SessionHooks.runButton(button.sessionId, button.scriptId, button.name) },
                                 enabled = button.enabled && !runtime.generating && !runtime.busy,
@@ -169,8 +181,11 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
             if (runtime.generating || runtime.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (session.messages.isEmpty()) EmptyState(Icons.Outlined.AutoStories, "故事由你开启", "发送第一句话，也可以在会话设置中调整人设、世界书和 API。", "会话设置", { settings = true })
             else LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = if (reading) 20.dp else 12.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(if (reading) 24.dp else 12.dp)) {
-                items(session.messages, key = { it.id }) { message ->
-                    MessageItem(message, session, state, reading, fontSize, streaming = runtime.generating && session.messages.lastOrNull()?.id == message.id,
+                itemsIndexed(session.messages, key = { _, message -> message.id }) { index, message ->
+                    val previous = session.messages.getOrNull(index - 1)
+                    val showTime = previous == null || message.createdAt - previous.createdAt >= 5 * 60 * 1000L
+                    MessageItem(message, session, state, reading, fontSize, showName = members.size > 1, timeLabel = if (showTime) messageTime(message.createdAt) else null,
+                        streaming = runtime.generating && session.messages.lastOrNull()?.id == message.id,
                         onEdit = { editing = message }, onDelete = { deleting = message }, onRewind = { rewinding = message },
                         canGenerate = !runtime.busy && !runtime.generating && message.role == "assistant" && session.messages.lastOrNull()?.id == message.id,
                         canEdit = !runtime.busy && !runtime.generating,
@@ -186,17 +201,25 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     if(searching) AlertDialog(onDismissRequest={ searching=false },title={ Text("搜索聊天记录") },text={
         Column {
             OutlinedTextField(search,{ search=it },label={ Text("关键词") },singleLine=true,modifier=Modifier.fillMaxWidth())
-            val matches=remember(search,session.messages) { if(search.isBlank()) emptyList() else session.messages.filter { it.content.contains(search.trim(),ignoreCase=true) } }
-            Text(if(search.isBlank()) "输入关键词查找当前会话" else "找到 ${matches.size} 条消息",modifier=Modifier.padding(vertical=8.dp))
+            var debounced by remember { mutableStateOf(search) }
+            LaunchedEffect(search) { delay(180); debounced = search }
+            val needle=debounced.trim()
+            val matches=remember(needle,session.messages) { if(needle.isEmpty()) emptyList() else session.messages.filter { it.content.contains(needle,ignoreCase=true) } }
+            Text(if(needle.isEmpty()) "输入关键词查找当前会话" else "找到 ${matches.size} 条消息",modifier=Modifier.padding(vertical=8.dp))
+            val hitColor=MaterialTheme.colorScheme.primary.copy(alpha=.22f)
             LazyColumn(Modifier.heightIn(max=360.dp)) { items(matches,key={ it.id }) { message ->
                 Column(Modifier.fillMaxWidth().clickable {
                     searching=false
                     val index=session.messages.indexOfFirst { it.id==message.id }
-                    if(index>=0) scope.launch { listState.scrollToItem(index) }
+                    if(index>=0) scope.launch {
+                        // Cards below can grow after the first jump, so re-apply briefly.
+                        repeat(3) { listState.scrollToItem(index); delay(150) }
+                    }
                 }.padding(vertical=10.dp)) {
                     Text(message.name ?: message.role,style=MaterialTheme.typography.labelMedium)
-                    val start=(message.content.indexOf(search.trim(),ignoreCase=true)-40).coerceAtLeast(0)
-                    Text(message.content.drop(start).take(200),maxLines=4,overflow=TextOverflow.Ellipsis)
+                    val at=message.content.indexOf(needle,ignoreCase=true)
+                    val start=(at-40).coerceAtLeast(0)
+                    Text(highlightMatches(message.content.drop(start).take(200),needle,hitColor),maxLines=4,overflow=TextOverflow.Ellipsis)
                 }
             } }
         }
@@ -206,8 +229,31 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     rewinding?.let { message -> AlertDialog(onDismissRequest = { rewinding = null }, title = { Text("回溯到这条消息？") }, text = { Text("后续消息将移除，剧情变量回到此节点保存的状态。建议先导出当前会话。") }, confirmButton = { TextButton(onClick = { actions.rewind(message.id); rewinding = null }) { Text("回溯") } }, dismissButton = { TextButton(onClick = { rewinding = null }) { Text("取消") } }) }
 }
 
+/** Time separator: time only for today, date + time otherwise. */
+private fun messageTime(stamp: Long): String {
+    val now = java.util.Calendar.getInstance()
+    val then = java.util.Calendar.getInstance().apply { timeInMillis = stamp }
+    val sameDay = now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) && now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR)
+    return java.text.SimpleDateFormat(if (sameDay) "HH:mm" else "M月d日 HH:mm", java.util.Locale.getDefault()).format(java.util.Date(stamp))
+}
+
+/** Highlights every case-insensitive occurrence of [query] in the search result preview. */
+private fun highlightMatches(text:String, query:String, background:Color):AnnotatedString {
+    if(query.isBlank()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        var cursor=0
+        while(cursor<=text.length) {
+            val at=text.indexOf(query,cursor,ignoreCase=true)
+            if(at<0) { append(text.substring(cursor)); break }
+            if(at>cursor) append(text.substring(cursor,at))
+            withStyle(SpanStyle(background=background)) { append(text.substring(at,at+query.length)) }
+            cursor=at+query.length
+        }
+    }
+}
+
 @Composable
-private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppState, reading: Boolean, fontSize: Float, streaming: Boolean, onEdit: () -> Unit, onDelete: () -> Unit, onRewind: () -> Unit, canGenerate: Boolean, canEdit: Boolean, onContinue: () -> Unit, onRegenerate: () -> Unit, onSwipe: (Int) -> Unit, onVariables: (JsonObject) -> Unit, onSend: (String) -> Unit) {
+private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppState, reading: Boolean, fontSize: Float, showName: Boolean, timeLabel: String?, streaming: Boolean, onEdit: () -> Unit, onDelete: () -> Unit, onRewind: () -> Unit, canGenerate: Boolean, canEdit: Boolean, onContinue: () -> Unit, onRegenerate: () -> Unit, onSwipe: (Int) -> Unit, onVariables: (JsonObject) -> Unit, onSend: (String) -> Unit) {
     val user = message.role == "user"
     val role = state.roles.firstOrNull { it.id == message.speakerId }
     val name = message.name ?: if (user) session.userName else role?.name ?: "角色"
@@ -215,58 +261,71 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
     val clipboard = LocalClipboardManager.current
     val opacity=((session.extra["bubbleOpacity"] as? JsonPrimitive)?.floatOrNull ?: 1f).coerceIn(0.1f,1f)
     val color = if (reading) Color.Transparent else (if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh).copy(alpha=opacity)
+    val square = session.extra.text("bubbleStyle")=="square"
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (!reading && user) Alignment.End else Alignment.Start) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-            if (!user && !reading) { Avatar(name, role?.avatarPath, Modifier.size(28.dp)); Spacer(Modifier.width(8.dp)) }
-            Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            if (reading) { Spacer(Modifier.weight(1f)); if (message.role == "system") Text("系统", style = MaterialTheme.typography.labelSmall) }
-            Box {
-                IconButton(onClick = { menu = true }, modifier = Modifier.size(32.dp)) { Icon(Icons.Outlined.MoreHoriz, "消息操作", Modifier.size(20.dp)) }
-                DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("复制消息") }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
-                    if (canGenerate) {
-                        DropdownMenuItem(text = { Text("续写") }, onClick = { menu = false; onContinue() })
-                        DropdownMenuItem(text = { Text("重生成") }, onClick = { menu = false; onRegenerate() })
-                    }
-                    DropdownMenuItem(text = { Text("编辑消息") }, enabled = canEdit, onClick = { menu = false; onEdit() })
-                    DropdownMenuItem(text = { Text("回溯至此") }, enabled = canEdit, onClick = { menu = false; onRewind() })
-                    DropdownMenuItem(text = { Text("删除消息") }, enabled = canEdit, onClick = { menu = false; onDelete() })
-                }
+        timeLabel?.let {
+            Box(Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             }
         }
-        Surface(color = color, shape = RoundedCornerShape(if (reading || session.extra.text("bubbleStyle")=="square") 0.dp else 20.dp), modifier = if (reading) Modifier.fillMaxWidth() else Modifier.widthIn(max = 600.dp).fillMaxWidth(if (user) .90f else .97f)) {
-            Column(Modifier.padding(horizontal = if (reading) 0.dp else 16.dp, vertical = if (reading) 4.dp else 12.dp)) {
-                val displayed = remember(message.content, message.extra, session.variables, session.regexIds, state.library, state.roles) { PromptEngine.displayText(message.content, state, session, message.role, processed = message.extra["xujing_processed_output"]?.jsonPrimitive?.booleanOrNull == true) }
-                val segments = remember(displayed, streaming) { MessageContentParser.parse(displayed, allowHtml = !streaming) }
-                val dark = (if (reading) MaterialTheme.colorScheme.background else color).luminance() < 0.5f
-                val quoteColor = if (dark) Color(0xFFFF9F43) else Color(0xFFA34B00)
-                val bracketColor = if (dark) Color(0xFF75B8FF) else Color(0xFF005EAD)
-                segments.forEachIndexed { segmentIndex, segment ->
-                    when (segment) {
-                        is MessageSegment.Markdown -> if (segment.source.isNotBlank()) {
-                            SelectionContainer { Text(basicMarkdown(segment.source, quoteColor, bracketColor), fontSize = fontSize.sp, lineHeight = (fontSize * 1.65f).sp, color = if (!reading && user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface) }
-                        }
-                        is MessageSegment.Code -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(12.dp)) {
-                                if (segment.language.isNotBlank()) Text(segment.language, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                SelectionContainer { Text(segment.source.trimEnd(), fontFamily = FontFamily.Monospace, fontSize = (fontSize * .9f).sp, lineHeight = (fontSize * 1.4f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (!reading && user) Arrangement.End else Arrangement.Start, verticalAlignment = Alignment.Top) {
+            if (!user && !reading) { Avatar(name, role?.avatarPath, Modifier.size(36.dp)); Spacer(Modifier.width(8.dp)) }
+            Column(horizontalAlignment = if (user) Alignment.End else Alignment.Start, modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = if (!reading && user) Arrangement.End else Arrangement.Start, modifier = Modifier.fillMaxWidth().heightIn(min = 22.dp)) {
+                    if (!reading && showName) { Text(name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1); Spacer(Modifier.width(6.dp)) }
+                    if (reading) { if (message.role == "system") Text("系统", style = MaterialTheme.typography.labelSmall); Spacer(Modifier.weight(1f)) }
+                    Box {
+                        IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Outlined.MoreHoriz, "消息操作", Modifier.size(18.dp)) }
+                        DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(text = { Text("复制消息") }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
+                            if (canGenerate) {
+                                DropdownMenuItem(text = { Text("续写") }, onClick = { menu = false; onContinue() })
+                                DropdownMenuItem(text = { Text("重生成") }, onClick = { menu = false; onRegenerate() })
                             }
+                            DropdownMenuItem(text = { Text("编辑消息") }, enabled = canEdit, onClick = { menu = false; onEdit() })
+                            DropdownMenuItem(text = { Text("回溯至此") }, enabled = canEdit, onClick = { menu = false; onRewind() })
+                            DropdownMenuItem(text = { Text("删除消息") }, enabled = canEdit, onClick = { menu = false; onDelete() })
                         }
-                        is MessageSegment.Html -> CardMessage(
-                            content = segment.source, documentMode = segment.document,
-                            segmentIndex = segmentIndex,
-                            runtimeToken = "${message.id}:${message.swipeIndex}:$segmentIndex:${segment.source.hashCode()}",
-                            session = session, message = message, state = state, allowScripts = state.preferences.allowCardScripts,
-                            onVariables = onVariables, onSend = onSend
-                        )
                     }
                 }
-                if (message.swipes.size > 1) Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { onSwipe(message.swipeIndex - 1) }, enabled = message.swipeIndex > 0) { Icon(Icons.Outlined.ChevronLeft, "上一个候选") }
-                    Text("${message.swipeIndex + 1} / ${message.swipes.size}", style = MaterialTheme.typography.labelSmall)
-                    IconButton(onClick = { onSwipe(message.swipeIndex + 1) }, enabled = message.swipeIndex < message.swipes.lastIndex) { Icon(Icons.Outlined.ChevronRight, "下一个候选") }
+                Surface(color = color,
+                    shape = if (reading || square) RoundedCornerShape(0.dp) else if (user) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp),
+                    modifier = if (reading) Modifier.fillMaxWidth() else Modifier.widthIn(max = 620.dp).fillMaxWidth(if (user) .78f else .84f)) {
+                    Column(Modifier.padding(horizontal = if (reading) 0.dp else 14.dp, vertical = if (reading) 4.dp else 10.dp)) {
+                        val displayed = remember(message.content, message.extra, session.variables, session.regexIds, state.library, state.roles) { PromptEngine.displayText(message.content, state, session, message.role, processed = message.extra["xujing_processed_output"]?.jsonPrimitive?.booleanOrNull == true) }
+                        val segments = remember(displayed, streaming) { MessageContentParser.parse(displayed, allowHtml = !streaming) }
+                        val dark = (if (reading) MaterialTheme.colorScheme.background else color).luminance() < 0.5f
+                        val quoteColor = if (dark) Color(0xFFFF9F43) else Color(0xFFA34B00)
+                        val bracketColor = if (dark) Color(0xFF75B8FF) else Color(0xFF005EAD)
+                        segments.forEachIndexed { segmentIndex, segment ->
+                            when (segment) {
+                                is MessageSegment.Markdown -> if (segment.source.isNotBlank()) {
+                                    SelectionContainer { Text(basicMarkdown(segment.source, quoteColor, bracketColor), fontSize = fontSize.sp, lineHeight = (fontSize * 1.65f).sp, color = if (!reading && user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface) }
+                                }
+                                is MessageSegment.Code -> Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        if (segment.language.isNotBlank()) Text(segment.language, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        SelectionContainer { Text(segment.source.trimEnd(), fontFamily = FontFamily.Monospace, fontSize = (fontSize * .9f).sp, lineHeight = (fontSize * 1.4f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    }
+                                }
+                                is MessageSegment.Html -> CardMessage(
+                                    content = segment.source, documentMode = segment.document,
+                                    segmentIndex = segmentIndex,
+                                    runtimeToken = "${message.id}:${message.swipeIndex}:$segmentIndex:${segment.source.hashCode()}",
+                                    session = session, message = message, state = state, allowScripts = state.preferences.allowCardScripts,
+                                    onVariables = onVariables, onSend = onSend
+                                )
+                            }
+                        }
+                        if (message.swipes.size > 1) Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { onSwipe(message.swipeIndex - 1) }, enabled = message.swipeIndex > 0) { Icon(Icons.Outlined.ChevronLeft, "上一个候选") }
+                            Text("${message.swipeIndex + 1} / ${message.swipes.size}", style = MaterialTheme.typography.labelSmall)
+                            IconButton(onClick = { onSwipe(message.swipeIndex + 1) }, enabled = message.swipeIndex < message.swipes.lastIndex) { Icon(Icons.Outlined.ChevronRight, "下一个候选") }
+                        }
+                    }
                 }
             }
+            if (user && !reading) { Spacer(Modifier.width(8.dp)); Avatar(name, null, Modifier.size(36.dp)) }
         }
     }
 }
