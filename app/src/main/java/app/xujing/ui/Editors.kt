@@ -100,7 +100,8 @@ internal fun ConnectionEditor(connection: ApiConnection, runtime: UiRuntime, act
     var reveal by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     val options = if (runtime.modelOptionsConnectionId == draft.id) runtime.modelOptions else emptyList()
-    LaunchedEffect(options) { if (options.isNotEmpty()) showModels = true }
+    // Re-open on every successful fetch: the list itself may be identical between fetches.
+    LaunchedEffect(runtime.modelFetchVersion) { if (options.isNotEmpty()) showModels = true }
     val providers = listOf(
         "OpenAI" to "https://api.openai.com/v1",
         "DeepSeek" to "https://api.deepseek.com/v1",

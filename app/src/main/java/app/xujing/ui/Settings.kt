@@ -45,7 +45,7 @@ internal fun SettingsScreen(state: AppState, runtime: UiRuntime, actions: AppAct
             OutlinedButton(onClick = { onConnection(ApiConnection()) }) { Icon(Icons.Outlined.Add, null); Text("添加 API 连接") }
             ChoiceField("默认聊天连接", state.preferences.defaultConnectionId, state.connections.map { it.id to it.name }, "未设置") { actions.savePreferences(state.preferences.copy(defaultConnectionId = it)) }
         }
-        CollapsibleSection("长期记忆") {
+        CollapsibleSection("长期记忆", "本地模型或远程 Embeddings，用于长期记忆检索。") {
             OutlinedCard(onClick = onModels, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Memory, null, tint = MaterialTheme.colorScheme.primary)

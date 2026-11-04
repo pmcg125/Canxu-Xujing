@@ -468,7 +468,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             try {
                 val models = withContext(Dispatchers.IO) { api.models(connection, apiKey) }
                 require(models.isNotEmpty()) { "服务未返回任何模型" }
-                _runtime.update { it.copy(modelOptions = models, modelOptionsConnectionId = connection.id) }
+                _runtime.update { it.copy(modelOptions = models, modelOptionsConnectionId = connection.id, modelFetchVersion = it.modelFetchVersion + 1) }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { error(e) }
             finally { _runtime.update { it.copy(fetchingModels = false) } }

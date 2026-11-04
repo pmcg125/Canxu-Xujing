@@ -9,7 +9,7 @@ data class UiRuntime(
     val suggesting: Boolean = false, val suggestionSessionId: String? = null,
     val suggestions: List<String> = emptyList(),
     val fetchingModels: Boolean = false, val modelOptions: List<String> = emptyList(),
-    val modelOptionsConnectionId: String? = null,
+    val modelOptionsConnectionId: String? = null, val modelFetchVersion: Int = 0,
 )
 interface AppActions {
     fun openSession(id: String?)
