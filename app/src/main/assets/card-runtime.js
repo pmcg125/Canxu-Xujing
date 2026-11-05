@@ -83,50 +83,193 @@
   const deleteWorldbook = name => worldbookMutation('deleteWorldbook', { name });
   const rebindCharWorldbooks = (character, options) => worldbookMutation('rebindCharWorldbooks', { character, options, characterId: context.characterId });
   const presetCache = new Map();
-  const getPresetNames = () => (context.presets || []).map(preset => preset.name);
-  const selectedPreset = () => (context.presets || []).find(preset => preset.id === context.activePresetId);
+  let presetListCache = null, presetWarmed = '';
+  const libraryPresets = () => context.presets || [];
+  const presetRecord = value => libraryPresets().find(preset => preset.id === value || preset.name === value);
+  const selectedPreset = () => libraryPresets().find(preset => preset.id === context.activePresetId);
+  // PiuPiu duplicates the current preset name in getAllPresets and prefixes getPresetNames with "in_use".
+  const getAllPresets = () => {
+    const names = (presetListCache && presetListCache.length ? presetListCache : libraryPresets()).map(preset => preset.name), current = selectedPreset()?.name;
+    return current ? [current, ...names] : names;
+  };
+  const getPresetNames = () => ['in_use', ...getAllPresets()];
+  const presetKey = (value = '') => {
+    if (value == null || value === '' || value === 'in_use') return context.activePresetId || selectedPreset()?.id || '';
+    return presetRecord(value)?.id || String(value);
+  };
+  const presetNameOf = (value = '') => presetRecord(value)?.name || (value && value !== 'in_use' ? String(value) : selectedPreset()?.name || '');
+  const presetData = (name = '') => {
+    const key = presetKey(name);
+    if (key && presetCache.has(key)) return presetCache.get(key);
+    const alias = presetRecord(name)?.name || (name == null || name === '' || name === 'in_use' ? selectedPreset()?.name : '');
+    return alias && presetCache.has(alias) ? presetCache.get(alias) : null;
+  };
+  const rememberPreset = (key, data) => {
+    const copy = clone(data), record = presetRecord(key) || (copy && typeof copy === 'object' ? presetRecord(copy.id) : null);
+    presetCache.set(key, copy);
+    if (record) { presetCache.set(record.id, copy); presetCache.set(record.name, copy); }
+    return clone(copy);
+  };
+  const dropPresetCache = (...keys) => {
+    for (const key of keys) { const record = presetRecord(key); presetCache.delete(key); if (record) { presetCache.delete(record.id); presetCache.delete(record.name); } }
+  };
+  const fetchPreset = async name => {
+    const key = presetKey(name);
+    if (!key) throw new Error('当前会话未选择预设');
+    return rememberPreset(key, await request('getPresetSettings', { name: key }));
+  };
+  const ensurePreset = async name => { const cached = presetData(name); return cached ? clone(cached) : fetchPreset(name); };
   const loadPreset = async name => {
-    const selected = !name || name === 'in_use' ? context.activePresetId : name;
-    if (!selected) throw new Error('当前会话未选择预设');
-    const record = await request('loadPreset', { name: selected });
-    presetCache.set(record.id, clone(record.data)); presetCache.set(record.name, clone(record.data));
+    const key = presetKey(name);
+    if (!key) throw new Error('当前会话未选择预设');
+    const record = await request('loadPreset', { name: key });
+    rememberPreset(record.name || key, record.data);
+    if (record.id) presetCache.set(record.id, clone(record.data));
     return clone(record.data);
   };
-  const getPreset = name => {
-    const selected = !name || name === 'in_use' ? context.activePresetId : name;
-    if (!selected || !presetCache.has(selected)) throw new Error('预设尚未加载，请先调用 loadPreset');
-    return clone(presetCache.get(selected));
+  const getPresetSettings = name => {
+    const data = presetData(name);
+    if (data == null) throw new Error('预设尚未加载：' + (presetNameOf(name) || '未选择预设'));
+    return clone(data);
   };
-  const selectPreset = async id => {
-    const result = await request('selectPreset', { id: id == null ? '' : String(id) });
-    if (result.value !== false) { context.activePresetId = result.activePresetId; await eventEmit('preset_changed', context.activePresetId); }
+  const presetSampleKeys = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'openai_max_tokens', 'max_tokens', 'seed', 'stop', 'n', 'min_p', 'top_a', 'repetition_penalty', 'temp_openai', 'top_p_openai', 'top_k_openai', 'frequency_penalty_openai', 'presence_penalty_openai', 'max_tokens_openai', 'freq_pen_openai', 'pres_pen_openai', 'repetition_penalty_openai', 'min_p_openai', 'top_a_openai', 'openai_max_context', 'names_behavior', 'reasoning_effort', 'squash_system_messages', 'stream_openai', 'wrap_in_quotes'];
+  const presetSettings = data => {
+    const settings = {};
+    if (data && typeof data === 'object') for (const key of presetSampleKeys) if (data[key] !== undefined) settings[key] = clone(data[key]);
+    return settings;
+  };
+  const presetOrder = data => {
+    const groups = Array.isArray(data?.prompt_order) ? data.prompt_order : [];
+    return groups.find(group => group && group.character_id === '100001' && Array.isArray(group.order)) ||
+      groups.find(group => group && Array.isArray(group.order) && group.order.length) ||
+      groups.find(group => group && Array.isArray(group.order)) || null;
+  };
+  const convertPresetPrompt = prompt => ({
+    id: prompt.identifier ?? prompt.id, name: prompt.name ?? '', role: prompt.role ?? 'system', content: prompt.content ?? '',
+    enabled: prompt.enabled !== false,
+    position: { type: prompt.injection_position === 1 ? 'in_chat' : 'relative', depth: prompt.injection_depth ?? 0, order: prompt.injection_order ?? 100 },
+    ...(prompt.extra && typeof prompt.extra === 'object' && !Array.isArray(prompt.extra) ? { extra: clone(prompt.extra) } : {}),
+  });
+  // Match TavernHelper.getPreset in PiuPiu: convert raw OpenAI presets into the exposed prompt shape.
+  const convertPreset = data => {
+    const source = data && typeof data === 'object' ? data : {}, prompts = Array.isArray(source.prompts) ? source.prompts : [];
+    const byIdentifier = new Map();
+    prompts.forEach(prompt => { const id = prompt?.identifier ?? prompt?.id; if (id != null && !byIdentifier.has(id)) byIdentifier.set(id, prompt); });
+    const used = new Set(), selected = [], unused = [], order = presetOrder(source)?.order, entries = Array.isArray(order) ? order : [];
+    for (const entry of entries) {
+      if (!entry || entry.enabled === false) continue;
+      const prompt = byIdentifier.get(entry.identifier ?? entry.id);
+      if (!prompt || used.has(prompt)) continue;
+      used.add(prompt); selected.push(convertPresetPrompt(prompt));
+    }
+    for (const prompt of prompts) if (!used.has(prompt)) unused.push(convertPresetPrompt(prompt));
+    return { settings: presetSettings(source), prompts: selected, prompts_unused: unused, extensions: source.extensions && typeof source.extensions === 'object' ? clone(source.extensions) : {} };
+  };
+  const getPreset = name => convertPreset(getPresetSettings(name));
+  const getCompletionPresetByName = name => { try { return getPresetSettings(name); } catch (_) { return undefined; } };
+  const getActivePresetId = () => {
+    const id = context.activePresetId, numeric = typeof id === 'string' && id.trim() !== '' ? Number(id) : id;
+    if (typeof numeric === 'number' && Number.isFinite(numeric)) return numeric;
+    return selectedPreset()?.name ?? (id ?? null);
+  };
+  const selectPreset = async nameOrId => {
+    const requested = nameOrId == null ? '' : String(nameOrId);
+    const result = await request('selectPreset', { id: requested });
+    if (result.value === false) return false;
+    if (result.activePresetId !== undefined) context.activePresetId = result.activePresetId;
+    const name = selectedPreset()?.name || (requested && requested !== 'in_use' ? requested : '');
+    await eventEmit('preset_changed', name, result.activePresetId);
+    await eventEmit('oai_preset_changed_after', name);
+    warmPreset();
     return result.value;
   };
+  const refreshPresetList = async () => {
+    try { const result = await request('getPresetList', {}); if (result && Array.isArray(result.presets)) presetListCache = clone(result.presets); return result; }
+    catch (_) { return null; }
+  };
+  const getPresetList = () => ({
+    presets: clone(presetListCache || libraryPresets().map(preset => ({ id: preset.id, name: preset.name }))),
+    preset_names: getPresetNames(),
+  });
+  const isCurrentPreset = value => { const record = presetRecord(value); return record ? record.id === context.activePresetId : selectedPreset()?.name === String(value); };
+  const presetMutate = async (method, name, body = {}, shownName) => {
+    const wasCurrent = isCurrentPreset(name);
+    try {
+      const result = await request(method, { name, ...body });
+      if (!result || result.value === false) return false;
+    } catch (_) { return false; }
+    dropPresetCache(name, body.newName);
+    if (body.data !== undefined) rememberPreset(body.newName || name, body.data);
+    presetListCache = null; presetWarmed = '';
+    await refreshPresetList();
+    // Keep the in-memory read path in sync with what was just written.
+    if (method !== 'deletePreset') { try { await fetchPreset(body.newName || name); } catch (_) {} }
+    warmPreset();
+    if (wasCurrent) { try { await eventEmit('preset_changed', shownName || presetNameOf(name), context.activePresetId); } catch (_) {} }
+    return true;
+  };
+  const withData = data => data === undefined ? {} : { data };
+  const createPreset = (name, data, options) => presetMutate('createPreset', name, withData(data));
+  const createOrReplacePreset = (name, data, options) => savePreset(name, data, options);
+  const savePreset = (name, data, options) => presetMutate('savePreset', name, withData(data));
+  const replacePreset = (name, data, options) => presetMutate('replacePreset', name, { data });
+  const setPreset = (name, data, options) => presetMutate('setPreset', name, { data });
+  const deletePreset = name => presetMutate('deletePreset', name);
+  const renamePreset = (name, newName) => presetMutate('renamePreset', name, { newName }, newName);
+  const updatePreset = async patch => {
+    if (!patch || typeof patch !== 'object') return false;
+    const name = patch.name ?? patch.identifier;
+    if (!name) return false;
+    const body = { ...patch }; delete body.name; delete body.identifier;
+    return presetMutate('updatePreset', name, { patch: body });
+  };
+  const updatePresetWith = async (name, fn, options) => {
+    if (typeof fn !== 'function') return false;
+    let data;
+    try { data = await fetchPreset(name); } catch (_) { return false; }
+    let updated;
+    try { updated = await fn(clone(data)); } catch (_) { return false; }
+    return savePreset(name, updated === undefined ? data : updated);
+  };
+  // Fetch the active preset as soon as the runtime is installed; failures stay silent.
+  const warmPreset = () => {
+    const record = selectedPreset(), key = context.activePresetId ? String(context.activePresetId) + ':' + (record?.revision ?? '') : '';
+    if (!key || presetData() || presetWarmed === key) return;
+    presetWarmed = key;
+    ensurePreset().catch(() => {});
+  };
   const presetManager = {
-    apiId: 'openai', getAllPresets: getPresetNames,
-    getPresetNames, getActivePresetId: () => context.activePresetId ?? null,
+    apiId: 'openai', getAllPresets,
+    getPresetNames, getActivePresetId,
     getSelectedPresetName: () => selectedPreset()?.name ?? '',
     getSelectedPreset: () => selectedPreset()?.name ?? '',
-    getPresetSettings: getPreset, getPreset,
-    getCompletionPresetByName: name => { try { return getPreset(name); } catch (_) { return undefined; } },
-    findPreset: name => getPresetNames().includes(name) ? name : undefined,
+    getPresetSettings, getPreset, getCompletionPresetByName,
+    findPreset: name => getAllPresets().includes(name) ? name : undefined,
     loadPreset, selectPreset, setActivePresetId: selectPreset,
-    getPresetList: () => { const names=getPresetNames(); const loaded=names.flatMap(name => presetCache.has(name) ? [{name,data:clone(presetCache.get(name))}] : []); return { presets:loaded.map(item=>item.data), preset_names:Object.fromEntries(loaded.map((item,index)=>[item.name,index])) }; },
+    getPresetList, createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, updatePreset, updatePresetWith, setPreset, savePreset,
   };
   const getPresetManager = () => presetManager;
-  const getContext = () => ({ chat: context.chat || [], name1: context.name1, name2: context.name2, chatId: context.sessionId, chatMetadata: { variables: getVariables() }, eventSource: { on: eventOn, removeListener: eventOff, once: eventOnce, emit: eventEmit }, saveChat: async () => true, saveMetadata: async () => replaceVariables(context.variables), getPresetManager,
-    getPreset, getPresetNames, loadPreset,
-    substituteParams: text => api.substituteParams(text),
-    sendOpenAIRequest: async (_type, messages, signal) => {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const content = await request('generate', { ordered_prompts: messages });
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      return { choices: [{ message: { role: 'assistant', content } }] };
-    },
-  });
+  const getContext = () => {
+    const result = { chat: context.chat || [], name1: context.name1, name2: context.name2, chatId: context.sessionId, chatMetadata: { variables: getVariables() }, eventSource: { on: eventOn, removeListener: eventOff, once: eventOnce, emit: eventEmit }, saveChat: async () => true, saveMetadata: async () => replaceVariables(context.variables), getPresetManager,
+      getPreset, getPresetSettings, getPresetNames, loadPreset,
+      substituteParams: text => api.substituteParams(text),
+      sendOpenAIRequest: async (_type, messages, signal) => {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        const content = await request('generate', { ordered_prompts: messages });
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        return { choices: [{ message: { role: 'assistant', content } }] };
+      },
+    };
+    // PiuPiu exposes the preset sampling block as context.chatCompletionSettings; omit it when nothing is cached.
+    const data = presetData();
+    if (data) result.chatCompletionSettings = presetSettings(data);
+    return result;
+  };
   const api = { getVariables, replaceVariables, insertOrAssignVariables, updateVariablesWith, getChatMessages, setChatMessages, getContext, eventOn, eventOff, eventOnce, eventEmit,
     getWorldbookNames, loadWorldInfo, getWorldbook, saveWorldInfo, createWorldbook, deleteWorldbook, rebindCharWorldbooks,
-    getPresetManager, getPresetNames, getAllPresets: getPresetNames, loadPreset, getPreset, getLoadedPresetName: () => selectedPreset()?.name ?? '', getActivePresetId: () => context.activePresetId ?? null, setActivePresetId: selectPreset,
+    getPresetManager, getPresetNames, getAllPresets, loadPreset, ensurePreset, getPreset, getPresetSettings, getPresetList, getCompletionPresetByName,
+    createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, setPreset, savePreset, updatePreset, updatePresetWith,
+    getLoadedPresetName: () => selectedPreset()?.name ?? '', getActivePresetId, setActivePresetId: selectPreset,
     getCurrentMessageId: () => Math.max(0, (context.chat || []).findIndex(m => m.id === context.messageId)),
     getLastMessageId: () => (context.chat || []).length - 1,
     generate: options => request('generate', typeof options === 'string' ? { user_input: options } : options),
@@ -138,6 +281,8 @@
   window.__xujingRequest = request;
   Object.entries(api).forEach(([name, value]) => { if (!(name in window)) window[name] = value; });
   window.SillyTavern = { getContext, getPresetManager };
+  warmPreset();
+  refreshPresetList();
   window.eventSource = { on:eventOn, once:eventOnce, removeListener:eventOff, emit:eventEmit, emitAndWait:eventEmit,
     removeAllListeners:name=>name===undefined ? events.clear() : events.delete(eventName(name)),
     makeLast:eventOn, makeFirst:(name,handler)=>{ name=eventName(name); events.set(name,new Set([handler,...(events.get(name)||[])])); return eventOn(name,handler); }
@@ -163,7 +308,7 @@
       XujingBridge.eventComplete(id,'null',String(error?.message||error));
     } finally { window.__xujingHostEventDepth=Math.max(0,window.__xujingHostEventDepth-1); }
   };
-  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', CHAT_CHANGED:'chat_id_changed', GENERATION_STARTED:'generation_started', GENERATION_ENDED:'generation_ended', GENERATION_STOPPED:'generation_stopped', CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready', GENERATE_AFTER_DATA:'generate_after_data'};
+  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', CHAT_CHANGED:'chat_id_changed', GENERATION_STARTED:'generation_started', GENERATION_ENDED:'generation_ended', GENERATION_STOPPED:'generation_stopped', CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready', GENERATE_AFTER_DATA:'generate_after_data', PRESET_CHANGED:'preset_changed', PRESET_DELETED:'preset_deleted', PRESET_RENAMED:'preset_renamed', PRESET_RENAMED_BEFORE:'preset_renamed_before', OAI_PRESET_CHANGED_AFTER:'oai_preset_changed_after', OAI_PRESET_CHANGED_BEFORE:'oai_preset_changed_before'};
   window.iframe_events=Object.freeze({
     MESSAGE_IFRAME_RENDER_STARTED:'message_iframe_render_started',
     MESSAGE_IFRAME_RENDER_ENDED:'message_iframe_render_ended',
@@ -184,10 +329,11 @@
     for (const prior of context.presets || []) {
       const current = (next.presets || []).find(item => item.id === prior.id);
       if (!current || current.name !== prior.name || current.revision !== prior.revision) {
-        presetCache.delete(prior.id); presetCache.delete(prior.name);
+        presetCache.delete(prior.id); presetCache.delete(prior.name); presetListCache = null; presetWarmed = '';
       }
     }
     context = next;
+    warmPreset();
     const revision = Number(next.initRevision || 0);
     if (revision !== previousRevision) {
       initRevision = revision;

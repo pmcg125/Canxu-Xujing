@@ -12,6 +12,7 @@ object CardLibrary {
     }
     fun names(state:AppState,sessionId:String):List<String> = books(state,sessionId).map { it.name }.distinct()
     fun presets(state:AppState):List<LibraryDocument> = state.library.filter { it.kind=="preset" }
+    fun presetNames(state:AppState):List<String> = presets(state).map { it.name }
     fun preset(state:AppState,idOrName:String):LibraryDocument? {
         val all=presets(state)
         all.firstOrNull { it.id==idOrName }?.let { return it }

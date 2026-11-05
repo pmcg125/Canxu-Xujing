@@ -17,11 +17,15 @@ async function main() {
       calls.push({ method, payload: parsed });
       queueMicrotask(() => {
         if (method === 'generate') return host.__xujingReply(id, 'local response');
+        // Preset runtime prewarms on load; keep it out of the generation assertions.
+        if (method === 'getPresetSettings') return host.__xujingReply(id, { error: '未实现' });
+        if (method === 'getPresetList') return host.__xujingReply(id, { presets: [], preset_names: [] });
+        if (['createPreset','savePreset','setPreset','replacePreset','updatePreset','deletePreset','renamePreset'].includes(method)) return host.__xujingReply(id, { value: true });
         if (method === 'loadWorldInfo') return host.__xujingReply(id, {value:books.get(parsed.name) ?? null});
         if (method === 'getWorldbook') return host.__xujingReply(id, Object.values(books.get(parsed.name)?.entries || {}));
         if (method === 'loadPreset') {
           const preset=host.__XUJING_CONTEXT__.presets.find(p => p.id===parsed.name || p.name===parsed.name);
-          return host.__xujingReply(id, preset ? {id:preset.id,name:preset.name,data:{prompts:[{identifier:'main',content:preset.name}]}} : {error:'预设不存在'});
+          return host.__xujingReply(id, preset ? {id:preset.id,name:preset.name,data:{prompts:[{identifier:'main',content:preset.name}],prompt_order:[{character_id:100001,order:[{identifier:'main',enabled:true}]}]}} : {error:'预设不存在'});
         }
         if (method === 'selectPreset') {
           const preset=host.__XUJING_CONTEXT__.presets.find(p => p.id===parsed.id || p.name===parsed.id);
@@ -61,16 +65,17 @@ async function main() {
   assert.equal(collection.getChat()[0].content, 'hello');
   assert.equal(openai.promptManager.preparePrompt({ content: '{{user}} + {{original}}' }, 'base').content, 'User + base');
   assert.equal(openai.promptManager.messages.getChat()[0].content, 'hello');
+  const generates = () => calls.filter(call => call.method === 'generate');
   const response = await openai.sendOpenAIRequest('normal', [{ role: 'user', content: 'question' }]);
   assert.equal(response.choices[0].message.content, 'local response');
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].method, 'generate');
-  assert.equal(calls[0].payload.ordered_prompts[0].content, 'question');
+  assert.equal(generates().length, 1);
+  assert.equal(generates()[0].method, 'generate');
+  assert.equal(generates()[0].payload.ordered_prompts[0].content, 'question');
   assert.equal(await utils.getSanitizedFilename('a:b. '), 'a_b');
   assert.equal(utils.equalsIgnoreCaseAndAccents('É', 'e'), true);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(() => openai.sendOpenAIRequest('normal', [], controller.signal), { name: 'AbortError' });
-  assert.equal(calls.length, 1);
+  assert.equal(generates().length, 1);
   assert.deepEqual(Array.from(world.world_names), ['本地']);
   assert.equal((await world.loadWorldInfo('本地')).entries[0].content, '旧内容');
   assert.equal((await world.loadWorldInfo('本地')).error, '资料的普通字段');
@@ -84,22 +89,23 @@ async function main() {
   assert.equal((await world.loadWorldInfo('新书')).entries[0].content, '持久内容');
   assert.equal((await host.TavernHelper.getWorldbook('新书'))[0].content, '持久内容');
   await world.charUpdatePrimaryWorld('新书');
-  assert.equal(calls.at(-1).payload.characterId, 'role');
+  assert.equal(calls.filter(call => call.method !== 'getPresetSettings' && call.method !== 'getPresetList').at(-1).payload.characterId, 'role');
   await assert.rejects(() => world.saveWorldInfo('拒绝', { entries: {} }), /保存失败/);
   assert.equal(await world.deleteWorldInfo('新书'), true);
   assert.deepEqual(Array.from(world.world_names), ['本地']);
   const manager=presetModule.getPresetManager('openai');
-  assert.deepEqual(Array.from(manager.getAllPresets()), ['预设甲','预设乙']);
+  // PiuPiu semantics: current preset name is duplicated at the front of getAllPresets().
+  assert.deepEqual(Array.from(manager.getAllPresets()), ['预设甲','预设甲','预设乙']);
   assert.equal(manager.getSelectedPresetName(),'预设甲');
   assert.throws(() => manager.getPresetSettings(), /尚未加载/);
   await manager.loadPreset('预设甲');
   assert.equal(manager.getPresetSettings().prompts[0].content,'预设甲');
   assert.equal(await manager.setActivePresetId('预设乙'), true);
-  assert.equal(manager.getActivePresetId(),'p2');
+  assert.equal(manager.getActivePresetId(),'预设乙');
   await manager.loadPreset('in_use');
   assert.equal(host.TavernHelper.getPreset().prompts[0].content,'预设乙');
   assert.equal(await manager.setActivePresetId('不存在'), false);
-  assert.equal(manager.getActivePresetId(),'p2');
+  assert.equal(manager.getActivePresetId(),'预设乙');
   assert.equal(await manager.setActivePresetId(null), true);
   assert.equal(manager.getActivePresetId(),null);
   assert.equal(await manager.setActivePresetId('p1'), true);
