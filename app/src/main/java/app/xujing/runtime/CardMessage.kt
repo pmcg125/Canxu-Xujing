@@ -83,6 +83,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
     val eventSequence=remember { java.util.concurrent.atomic.AtomicLong() }
     val snapshot=buildJsonObject {
         put("sessionId",session.id); put("messageId",message.id); put("runtimeToken",endpointToken); put("variables",session.variables)
+        put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
         put("initRevision",(session.extra["xujing_init_revision"] as? JsonPrimitive)?.intOrNull ?: 0)
         put("characterId",message.speakerId ?: session.roleIds.firstOrNull().orEmpty())
         put("worldbookNames",JsonArray(CardLibrary.names(state,session.id).map(::JsonPrimitive)))

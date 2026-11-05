@@ -123,64 +123,99 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         require(name.length<=200) { "预设名称不能超过 200 个字符" }
         return name
     }
-    private fun presetChange(state:AppState,method:String,payload:JsonObject):AppState {
-        val name=presetName(payload.text("name"))
-        val existing=CardLibrary.preset(state,name)
+    private data class PresetChange(val state:AppState,val document:LibraryDocument?,val created:Boolean)
+    private fun presetChange(state:AppState,sessionId:String,method:String,payload:JsonObject):PresetChange {
+        val session=state.sessions.firstOrNull { it.id==sessionId }
+        val raw=payload.text("name").trim()
+        fun inUse()=session?.presetId?.let { id -> CardLibrary.presets(state).firstOrNull { it.id==id } }
+        // Empty names mean "in_use" for set/replace, while delete/rename keep requiring a name.
+        fun resolve()=if(raw.isEmpty() || raw=="in_use") inUse() else CardLibrary.preset(state,presetName(raw))
+        fun named()=if(raw=="in_use") inUse() else CardLibrary.preset(state,presetName(raw))
         fun put(document:LibraryDocument)=state.copy(library=if(state.library.any { it.id==document.id }) state.library.map { if(it.id==document.id) document else it } else state.library+document)
-        fun data()=payload["data"]?.takeUnless { it is JsonNull } ?: error("缺少预设数据：$name")
+        fun data(name:String)=payload["data"]?.takeUnless { it is JsonNull } ?: error("缺少预设数据：$name")
         return when(method) {
             "createPreset" -> {
-                require(existing==null) { "预设已存在：$name" }
-                put(LibraryDocument(name=name,kind="preset",data=payload["data"]?.takeUnless { it is JsonNull } ?: EmptyObject))
+                val name=presetName(raw)
+                require(CardLibrary.preset(state,name)==null) { "预设已存在：$name" }
+                val document=LibraryDocument(name=name,kind="preset",data=payload["data"]?.takeUnless { it is JsonNull } ?: EmptyObject)
+                PresetChange(put(document),document,true)
             }
-            "savePreset", "setPreset" -> {
-                val incoming=if(method=="setPreset") data() else payload["data"]?.takeUnless { it is JsonNull }
-                put((existing ?: LibraryDocument(name=name,kind="preset")).copy(data=incoming ?: existing?.data ?: EmptyObject))
+            "savePreset" -> {
+                require(raw.isNotEmpty() && raw!="in_use") { "保存预设名称无效" }
+                val name=presetName(raw)
+                val existing=CardLibrary.preset(state,name)
+                // PiuPiu copies the active preset when data is omitted, not the target's old data.
+                val incoming=payload["data"]?.takeUnless { it is JsonNull } ?: inUse()?.data ?: existing?.data ?: EmptyObject
+                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=incoming)
+                PresetChange(put(document),document,existing==null)
+            }
+            "setPreset" -> {
+                val existing=resolve()
+                require(existing!=null || (raw.isNotEmpty() && raw!="in_use")) { "当前会话没有预设" }
+                val name=existing?.name ?: presetName(raw)
+                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=data(name))
+                PresetChange(put(document),document,existing==null)
             }
             "replacePreset" -> {
-                requireNotNull(existing) { "预设不存在：$name" }
-                put(existing.copy(data=data()))
+                val existing=resolve()
+                requireNotNull(existing) { "预设不存在：${raw.ifEmpty { "in_use" }}" }
+                val document=existing.copy(data=data(existing.name))
+                PresetChange(put(document),document,false)
             }
             "updatePreset" -> {
+                val name=presetName(raw)
+                val existing=CardLibrary.preset(state,name)
                 requireNotNull(existing) { "预设不存在：$name" }
                 val patch=payload["patch"] as? JsonObject ?: error("预设补丁需要 JSON 对象")
                 val current=existing.data as? JsonObject ?: error("预设内容不是对象：$name")
-                put(existing.copy(data=JsonObject(current+patch)))
+                val document=existing.copy(data=JsonObject(current+patch))
+                PresetChange(put(document),document,false)
             }
             "deletePreset" -> {
-                requireNotNull(existing) { "预设不存在：$name" }
-                state.copy(library=state.library.filterNot { it.id==existing.id },sessions=state.sessions.map { if(it.presetId==existing.id) it.copy(presetId=null) else it })
+                val existing=named()
+                requireNotNull(existing) { "预设不存在：${raw.ifEmpty { "in_use" }}" }
+                PresetChange(state.copy(library=state.library.filterNot { it.id==existing.id },sessions=state.sessions.map { if(it.presetId==existing.id) it.copy(presetId=null) else it }),null,false)
             }
             "renamePreset" -> {
-                requireNotNull(existing) { "预设不存在：$name" }
+                val existing=named()
+                requireNotNull(existing) { "预设不存在：${raw.ifEmpty { "in_use" }}" }
                 val newName=presetName(payload.text("newName"))
                 require(CardLibrary.preset(state,newName)?.id in setOf(null,existing.id)) { "预设已存在：$newName" }
-                put(existing.copy(name=newName))
+                val document=existing.copy(name=newName)
+                PresetChange(put(document),document,false)
             }
             else -> error("尚未实现的预设操作：$method")
         }
     }
     /** Save a preset mutation before reporting success, matching [commitCardLibrary]. */
-    private suspend fun commitPreset(method:String,payload:JsonObject):JsonObject = withContext(NonCancellable) {
+    private suspend fun commitPreset(sessionId:String,method:String,payload:JsonObject):JsonObject = withContext(NonCancellable) {
         require(storageReady) { "本地资料尚未加载完成" }
         saveMutex.withLock {
-            fun response()=buildJsonObject { put("value",JsonPrimitive(true)) }
+            fun response(change:PresetChange)=buildJsonObject {
+                put("value",JsonPrimitive(true))
+                change.document?.let { document ->
+                    put("id",JsonPrimitive(document.id))
+                    put("name",JsonPrimitive(document.name))
+                    put("data",document.data)
+                }
+                put("created",JsonPrimitive(change.created))
+            }
             var staged=false
             try {
                 repeat(16) {
                     require(!runtime.value.generating) { "生成期间暂不能修改预设" }
                     val before=_state.value
-                    val next=presetChange(before,method,payload)
-                    if(next==before) {
-                        if(!staged) return@withLock response()
+                    val change=presetChange(before,sessionId,method,payload)
+                    if(change.state==before) {
+                        if(!staged) return@withLock response(change)
                         // A previous compare-and-set failure staged an older snapshot on disk.
                         withContext(Dispatchers.IO) { store.save(before) }
-                        if(_state.compareAndSet(before,before)) return@withLock response()
+                        if(_state.compareAndSet(before,before)) return@withLock response(change)
                         return@repeat
                     }
-                    withContext(Dispatchers.IO) { store.save(next) }
+                    withContext(Dispatchers.IO) { store.save(change.state) }
                     staged=true
-                    if(_state.compareAndSet(before,next)) return@withLock response()
+                    if(_state.compareAndSet(before,change.state)) return@withLock response(change)
                 }
                 error("保存时资料持续变化，请重试")
             } catch(e:Exception) {
@@ -530,6 +565,8 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     }
     override fun showPrompt() { val s=active() ?: return; try { val result=lastPrompts[s.id] ?: PromptEngine.build(state.value,s); _runtime.update { it.copy(promptPreview=buildJsonObject { put("source",if(s.id in lastPrompts) "最近一次请求的提示词" else "按当前资料编排的预览，未包含语义检索结果"); put("messages",AppJson.encodeToJsonElement(result.messages)); put("activatedWorldEntries",AppJson.encodeToJsonElement(result.activatedEntries)); put("diagnostics",AppJson.encodeToJsonElement(result.diagnostics)) }.let { AppJson.encodeToString(it) }) } } catch(e:Exception) { error(e) } }
     override fun clearError() { _runtime.update { it.copy(error=null) } }
+    /** One-shot UI intent from the card runtime; the Compose shell consumes it. */
+    override fun consumeOpenLibrary() { _runtime.update { it.copy(openLibraryKind=null) } }
     override fun clearPrompt() { _runtime.update { it.copy(promptPreview=null) } }
     override fun clearSuggestions() {
         suggestionVersion++
@@ -671,7 +708,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 SessionHooks.emit(s.id,event,args,runtimeToken)
             }
             "getContext" -> buildJsonObject { put("chat",AppJson.encodeToJsonElement(s.messages)); put("variables",s.variables); put("name1",s.userName); put("name2",state.value.roles.firstOrNull { it.id in s.roleIds }?.name.orEmpty()) }
-            "getVariables" -> buildJsonObject { put("value",app.xujing.core.compat.CardVariables.read(s,obj.obj("option"))) }
+            "getVariables" -> buildJsonObject { put("value",app.xujing.core.compat.CardVariables.read(state.value,s,obj.obj("option"))) }
             "replaceVariables", "setVariables" -> commitCardLibrary(s.id,method,obj)
             "parseMvuMessage" -> {
                 val args=obj.array("args")
@@ -701,11 +738,17 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             "getPresetList" -> {
                 val presets=CardLibrary.presets(state.value)
                 buildJsonObject {
-                    put("presets",buildJsonArray { presets.forEach { add(buildJsonObject { put("id",it.id); put("name",it.name) }) } })
-                    put("preset_names",JsonArray(CardLibrary.presetNames(state.value).map(::JsonPrimitive)))
+                    put("presets",buildJsonArray { presets.forEach { add(it.data) } })
+                    put("preset_names",buildJsonObject { presets.forEachIndexed { index,d -> put(d.name,JsonPrimitive(index)) } })
+                    put("names",JsonArray(presets.map { JsonPrimitive(it.name) }))
+                    put("ids",JsonArray(presets.map { JsonPrimitive(it.id) }))
                 }
             }
-            "createPreset", "savePreset", "setPreset", "replacePreset", "updatePreset", "deletePreset", "renamePreset" -> commitPreset(method,obj)
+            "openPresetManager" -> if(runtime.value.generating) JsonPrimitive(false) else {
+                _runtime.update { it.copy(openLibraryKind="preset") }
+                JsonPrimitive(true)
+            }
+            "createPreset", "savePreset", "setPreset", "replacePreset", "updatePreset", "deletePreset", "renamePreset" -> commitPreset(s.id,method,obj)
             "saveWorldInfo", "createWorldbook", "deleteWorldbook", "rebindCharWorldbooks", "selectPreset" -> commitCardLibrary(s.id,method,obj)
             "setChatMessages" -> {
                 require(!runtime.value.generating) { "生成中暂不能修改历史" }

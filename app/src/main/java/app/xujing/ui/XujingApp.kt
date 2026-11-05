@@ -25,6 +25,7 @@ import java.util.Locale
 fun XujingApp(state: AppState, runtime: UiRuntime, actions: AppActions) {
     XujingTheme(state.preferences) {
         var screen by rememberSaveable { mutableStateOf("sessions") }
+        var libraryKind by rememberSaveable { mutableStateOf("worldbook") }
         var roleEditor by remember { mutableStateOf<RoleCard?>(null) }
         var documentEditor by remember { mutableStateOf<LibraryDocument?>(null) }
         var connectionEditor by remember { mutableStateOf<ApiConnection?>(null) }
@@ -32,6 +33,14 @@ fun XujingApp(state: AppState, runtime: UiRuntime, actions: AppActions) {
         var models by rememberSaveable { mutableStateOf(false) }
         val session = state.sessions.firstOrNull { it.id == runtime.activeSessionId }
         session?.let { app.xujing.runtime.SessionScriptRuntime(state,it) }
+        // Card runtime asked for a library tab (presetManager.open*); leave the chat and show it.
+        LaunchedEffect(runtime.openLibraryKind) {
+            val kind=runtime.openLibraryKind ?: return@LaunchedEffect
+            if(session!=null) actions.openSession(null)
+            libraryKind=kind
+            screen="library"
+            actions.consumeOpenLibrary()
+        }
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(runtime.status) { if (runtime.status.isNotBlank() && !runtime.generating) snackbar.showSnackbar(runtime.status) }
         BackHandler(enabled = roleEditor != null || documentEditor != null || connectionEditor != null || models || session != null) {
@@ -65,7 +74,7 @@ fun XujingApp(state: AppState, runtime: UiRuntime, actions: AppActions) {
                         if (runtime.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         when (screen) {
                             "roles" -> RolesScreen(state, actions, onEdit = { roleEditor = it }, onCreate = { roleEditor = RoleCard() })
-                            "library" -> LibraryScreen(state, actions, onEdit = { documentEditor = it })
+                            "library" -> LibraryScreen(state, actions, kind = libraryKind, onKind = { libraryKind = it }, onEdit = { documentEditor = it })
                             "settings" -> SettingsScreen(state, runtime, actions, onModels = { models = true }, onConnection = { connectionEditor = it })
                             else -> SessionsScreen(state, actions, onCreate = { showCreate = true })
                         }
@@ -156,12 +165,11 @@ private fun RolesScreen(state: AppState, actions: AppActions, onEdit: (RoleCard)
 }
 
 @Composable
-private fun LibraryScreen(state: AppState, actions: AppActions, onEdit: (LibraryDocument) -> Unit) {
-    var kind by rememberSaveable { mutableStateOf("worldbook") }
+private fun LibraryScreen(state: AppState, actions: AppActions, kind: String, onKind: (String) -> Unit, onEdit: (LibraryDocument) -> Unit) {
     var deleting by remember { mutableStateOf<LibraryDocument?>(null) }
     Column {
         ScrollableTabRow(selectedTabIndex = libraryKinds.indexOfFirst { it.first == kind }.coerceAtLeast(0), edgePadding = 16.dp) {
-            libraryKinds.forEach { (id, name) -> Tab(selected = kind == id, onClick = { kind = id }, text = { Text(name) }) }
+            libraryKinds.forEach { (id, name) -> Tab(selected = kind == id, onClick = { onKind(id) }, text = { Text(name) }) }
         }
         val documents = state.library.filter { it.kind == kind }
         if (documents.isEmpty()) EmptyState(Icons.Outlined.AutoStories, "还没有${kindName(kind)}", "导入原有资料，或新建 JSON 资料。未知扩展字段会随资料保留。", "新建${kindName(kind)}", { onEdit(LibraryDocument(kind = kind, name = "新${kindName(kind)}")) })

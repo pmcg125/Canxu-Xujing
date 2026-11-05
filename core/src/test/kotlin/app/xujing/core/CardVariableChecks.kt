@@ -19,9 +19,9 @@ object CardVariableChecks {
         check(CandidateSnapshots.variablesFor(updated.messages.single())==vars(3))
         check(runCatching { CardVariables.apply(state,"s",payload("chat",vars(1))) }.isFailure)
         check(runCatching { CardVariables.apply(state.copy(sessions=listOf(session.copy(messages=listOf(first.copy(swipeIndex=1))))),"s",payload("message",vars(1))) }.isFailure)
-        check(runCatching { CardVariables.read(session,buildJsonObject { put("type","global") }) }.isFailure)
+        check(runCatching { CardVariables.read(state,session,buildJsonObject { put("type","global") }) }.isFailure)
         check(CardVariables.apply(state,"s",payload("chat",vars(9))).state.sessions.single().variables==vars(3))
-        check(CardVariables.read(session,buildJsonObject { put("type","message"); put("message_id",-1) })==vars(1))
+        check(CardVariables.read(state,session,buildJsonObject { put("type","message"); put("message_id",-1) })==vars(1))
         println("CardVariableChecks passed: scopes, candidate snapshots and stale writes")
     }
 }

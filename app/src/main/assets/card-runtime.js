@@ -36,11 +36,13 @@
   const scope = (option={}) => {
     const type=option.type || 'chat';
     if(type==='chat') return {type};
+    // PiuPiu keeps one global preset bucket (no per-preset-name split).
+    if(type==='preset') return {type:'preset'};
     if(type!=='message') throw Error('尚未实现的变量作用域：'+type);
     const message=scopedMessage(option); if(!message) throw Error('消息不存在');
     return {type,messageId:message.id,swipe_id:message.swipe_id};
   };
-  const getVariables = (option={}) => { const selected=scope(option); return clone(selected.type==='chat' ? context.variables || {} : context.chat.find(m=>m.id===selected.messageId)?.variables || {}); };
+  const getVariables = (option={}) => { const selected=scope(option); if(selected.type==='preset') return clone(context.presetVariables || {}); return clone(selected.type==='chat' ? context.variables || {} : context.chat.find(m=>m.id===selected.messageId)?.variables || {}); };
   let variableWrites=0;
   const replaceVariables = async (variables, option={}) => {
     const selected=scope(option), expected=getVariables(option), next=clone(variables);
@@ -48,6 +50,7 @@
     try {
       const result=await request('replaceVariables',{variables:next,option:selected,expected});
       if(selected.type==='chat') context.variables=clone(result.value);
+      else if(selected.type==='preset') context.presetVariables=clone(result.value);
       else { const message=context.chat.find(m=>m.id===selected.messageId); if(message) message.variables=clone(result.value); }
       await eventEmit('mag_variable_update_ended',clone(result.value)).catch(console.error);
       return clone(result.value);
@@ -83,13 +86,15 @@
   const deleteWorldbook = name => worldbookMutation('deleteWorldbook', { name });
   const rebindCharWorldbooks = (character, options) => worldbookMutation('rebindCharWorldbooks', { character, options, characterId: context.characterId });
   const presetCache = new Map();
-  let presetListCache = null, presetWarmed = '';
+  let presetWarmed = '';
+  // getPresetList() returns preset *data* plus a name->index map, so keep them apart from the name list.
+  let presetListData = [], presetListNames = [], presetListIds = [];
   const libraryPresets = () => context.presets || [];
   const presetRecord = value => libraryPresets().find(preset => preset.id === value || preset.name === value);
   const selectedPreset = () => libraryPresets().find(preset => preset.id === context.activePresetId);
   // PiuPiu duplicates the current preset name in getAllPresets and prefixes getPresetNames with "in_use".
   const getAllPresets = () => {
-    const names = (presetListCache && presetListCache.length ? presetListCache : libraryPresets()).map(preset => preset.name), current = selectedPreset()?.name;
+    const names = presetListNames.length ? presetListNames.slice() : libraryPresets().map(preset => preset.name), current = selectedPreset()?.name;
     return current ? [current, ...names] : names;
   };
   const getPresetNames = () => ['in_use', ...getAllPresets()];
@@ -184,52 +189,117 @@
     return result.value;
   };
   const refreshPresetList = async () => {
-    try { const result = await request('getPresetList', {}); if (result && Array.isArray(result.presets)) presetListCache = clone(result.presets); return result; }
-    catch (_) { return null; }
-  };
-  const getPresetList = () => ({
-    presets: clone(presetListCache || libraryPresets().map(preset => ({ id: preset.id, name: preset.name }))),
-    preset_names: getPresetNames(),
-  });
-  const isCurrentPreset = value => { const record = presetRecord(value); return record ? record.id === context.activePresetId : selectedPreset()?.name === String(value); };
-  const presetMutate = async (method, name, body = {}, shownName) => {
-    const wasCurrent = isCurrentPreset(name);
     try {
-      const result = await request(method, { name, ...body });
-      if (!result || result.value === false) return false;
-    } catch (_) { return false; }
+      const result = await request('getPresetList', {});
+      if (result && Array.isArray(result.presets)) presetListData = clone(result.presets);
+      if (result) {
+        // New contract: names[]; fall back to preset_names (object) and then to a legacy names array.
+        const names = Array.isArray(result.names) ? result.names
+          : Array.isArray(result.preset_names) ? result.preset_names
+          : Object.keys(result.preset_names || {});
+        presetListNames = names.map(name => String(name));
+        presetListIds = Array.isArray(result.ids) ? result.ids.map(id => String(id)) : [];
+      }
+      return result;
+    } catch (_) { return null; }
+  };
+  // Mirrors PiuPiu's shape: preset data array + name->index object + current sampling settings.
+  const getPresetList = () => ({
+    presets: clone(presetListData),
+    preset_names: Object.fromEntries(presetListNames.map((name, index) => [name, index])),
+    settings: presetSettings(presetData()),
+  });
+  const isCurrentPreset = value => {
+    const record = presetRecord(value);
+    if (record) return record.id === context.activePresetId;
+    // "in_use"/empty always address the active preset.
+    if (value == null || value === '' || value === 'in_use') return !!selectedPreset();
+    return selectedPreset()?.name === String(value);
+  };
+  const assertWritableName = (name, { allowInUse = false } = {}) => {
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) throw new Error('预设名称不能为空');
+    if (trimmed === 'in_use' && !allowInUse) throw new Error('保存预设名称无效');
+    return trimmed;
+  };
+  // Low-level write path: never swallows host errors, keeps caches/events in step.
+  const presetCommit = async (method, name, body = {}, shownName) => {
+    const wasCurrent = isCurrentPreset(name);
+    const result = await request(method, { name, ...body });
+    if (result && result.value === false) throw new Error('预设操作失败：' + method);
     dropPresetCache(name, body.newName);
-    if (body.data !== undefined) rememberPreset(body.newName || name, body.data);
-    presetListCache = null; presetWarmed = '';
+    // Prefer the host's normalized document; fall back to what we sent when it does not echo data.
+    const written = result && result.data !== undefined ? result.data : body.data;
+    if (written !== undefined) rememberPreset(result?.name || body.newName || name, written);
+    presetListData = []; presetListNames = []; presetListIds = []; presetWarmed = '';
     await refreshPresetList();
     // Keep the in-memory read path in sync with what was just written.
-    if (method !== 'deletePreset') { try { await fetchPreset(body.newName || name); } catch (_) {} }
+    if (method !== 'deletePreset') { try { await fetchPreset(result?.name || body.newName || name); } catch (_) {} }
     warmPreset();
     if (wasCurrent) { try { await eventEmit('preset_changed', shownName || presetNameOf(name), context.activePresetId); } catch (_) {} }
-    return true;
+    return result;
   };
   const withData = data => data === undefined ? {} : { data };
-  const createPreset = (name, data, options) => presetMutate('createPreset', name, withData(data));
-  const createOrReplacePreset = (name, data, options) => savePreset(name, data, options);
-  const savePreset = (name, data, options) => presetMutate('savePreset', name, withData(data));
-  const replacePreset = (name, data, options) => presetMutate('replacePreset', name, { data });
-  const setPreset = (name, data, options) => presetMutate('setPreset', name, { data });
-  const deletePreset = name => presetMutate('deletePreset', name);
-  const renamePreset = (name, newName) => presetMutate('renamePreset', name, { newName }, newName);
+  const createPreset = async (name, data, options) => {
+    const target = String(name ?? '').trim();
+    if (target === 'in_use' || getAllPresets().includes(target)) return false;
+    assertWritableName(target);
+    await presetCommit('createPreset', target, withData(data));
+    return true;
+  };
+  const savePreset = async (name, data, options) => {
+    const target = assertWritableName(name);
+    await presetCommit('savePreset', target, withData(data));
+  };
+  const createOrReplacePreset = async (name, data, options) => {
+    const target = assertWritableName(name, { allowInUse: true });
+    // PiuPiu routes "in_use" through replacePreset: write the active preset, report nothing created.
+    if (target === 'in_use') {
+      const active = selectedPreset()?.name || context.activePresetId || 'in_use';
+      await presetCommit('replacePreset', active, { data: data === undefined ? {} : data });
+      return false;
+    }
+    const result = await presetCommit('savePreset', target, withData(data));
+    return result?.created === true;
+  };
+  const replacePreset = async (name, data, options) => {
+    if (data === undefined || data === null) throw new TypeError('预设数据格式无效');
+    // An empty name means "the active preset"; resolve it locally so the host does not see "in_use".
+    const target = String(name ?? '').trim() || selectedPreset()?.name || 'in_use';
+    await presetCommit('replacePreset', target, { data });
+  };
+  const setPreset = async (name, data, options) => {
+    const result = await presetCommit('setPreset', name, { data });
+    return convertPreset(result?.data ?? data);
+  };
+  const deletePreset = async name => {
+    const target = String(name ?? '').trim();
+    if (!target || target === 'in_use' || !getAllPresets().includes(target)) return false;
+    try { await presetCommit('deletePreset', target); return true; }
+    catch (_) { return false; }
+  };
+  const renamePreset = async (name, newName, options) => {
+    const from = String(name ?? '').trim(), to = String(newName ?? '').trim();
+    if (!from || !to || from === 'in_use') return false;
+    if (getAllPresets().includes(to)) return false;
+    if (!getAllPresets().includes(from)) throw new Error('预设不存在：' + from);
+    await presetCommit('renamePreset', from, { newName: to }, to);
+    return true;
+  };
   const updatePreset = async patch => {
     if (!patch || typeof patch !== 'object') return false;
     const name = patch.name ?? patch.identifier;
-    if (!name) return false;
+    if (!name && !selectedPreset()) return false;
     const body = { ...patch }; delete body.name; delete body.identifier;
-    return presetMutate('updatePreset', name, { patch: body });
+    await presetCommit('updatePreset', name || selectedPreset()?.name, { patch: body });
   };
   const updatePresetWith = async (name, fn, options) => {
-    if (typeof fn !== 'function') return false;
-    let data;
-    try { data = await fetchPreset(name); } catch (_) { return false; }
-    let updated;
-    try { updated = await fn(clone(data)); } catch (_) { return false; }
-    return savePreset(name, updated === undefined ? data : updated);
+    if (typeof fn !== 'function') throw new TypeError('updatePresetWith 需要一个更新函数');
+    const data = await fetchPreset(name);
+    const updated = await fn(clone(data));
+    if (!updated || typeof updated !== 'object') throw new TypeError('预设更新函数必须返回预设对象');
+    await savePreset(name, updated);
+    return updated;
   };
   // Fetch the active preset as soon as the runtime is installed; failures stay silent.
   const warmPreset = () => {
@@ -238,6 +308,8 @@
     presetWarmed = key;
     ensurePreset().catch(() => {});
   };
+  // PiuPiu exposes six aliases; they all sync-return undefined and just request the UI.
+  const openPresetManager = () => { request('openPresetManager', {}).catch(() => {}); };
   const presetManager = {
     apiId: 'openai', getAllPresets,
     getPresetNames, getActivePresetId,
@@ -247,6 +319,8 @@
     findPreset: name => getAllPresets().includes(name) ? name : undefined,
     loadPreset, selectPreset, setActivePresetId: selectPreset,
     getPresetList, createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, updatePreset, updatePresetWith, setPreset, savePreset,
+    open: openPresetManager, show: openPresetManager, openManager: openPresetManager,
+    openPresetManager, showPresetManager: openPresetManager, openPromptManager: openPresetManager,
   };
   const getPresetManager = () => presetManager;
   const getContext = () => {
@@ -266,6 +340,7 @@
     return result;
   };
   const api = { getVariables, replaceVariables, insertOrAssignVariables, updateVariablesWith, getChatMessages, setChatMessages, getContext, eventOn, eventOff, eventOnce, eventEmit,
+    getPresetVariables: () => getVariables({type:'preset'}), setPresetVariables: value => replaceVariables(value, {type:'preset'}),
     getWorldbookNames, loadWorldInfo, getWorldbook, saveWorldInfo, createWorldbook, deleteWorldbook, rebindCharWorldbooks,
     getPresetManager, getPresetNames, getAllPresets, loadPreset, ensurePreset, getPreset, getPresetSettings, getPresetList, getCompletionPresetByName,
     createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, setPreset, savePreset, updatePreset, updatePresetWith,
@@ -326,12 +401,14 @@
   window.__xujingUpdate = next => {
     const oldVariables = JSON.stringify(context.variables || {});
     const previousRevision = initRevision;
+    let presetListStale = false;
     for (const prior of context.presets || []) {
       const current = (next.presets || []).find(item => item.id === prior.id);
       if (!current || current.name !== prior.name || current.revision !== prior.revision) {
-        presetCache.delete(prior.id); presetCache.delete(prior.name); presetListCache = null; presetWarmed = '';
+        presetCache.delete(prior.id); presetCache.delete(prior.name); presetListStale = true; presetWarmed = '';
       }
     }
+    if (presetListStale) { presetListData = []; presetListNames = []; presetListIds = []; refreshPresetList(); }
     context = next;
     warmPreset();
     const revision = Number(next.initRevision || 0);

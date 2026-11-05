@@ -72,7 +72,8 @@ fun SessionScriptRuntime(state: AppState, session: ChatSession) {
         SideEffect { SessionHooks.clearButtons(session.id) }
         return
     }
-    val scripts=remember(state.roles,session.roleIds,session.extra["disabledSessionScriptIds"]) { SessionScripts.collect(state,session) }
+    val presetData=state.library.firstOrNull { it.enabled && it.kind=="preset" && it.id==session.presetId }?.data
+    val scripts=remember(state.roles,session.roleIds,session.extra["disabledSessionScriptIds"],session.presetId,presetData) { SessionScripts.collect(state,session) }
     if(scripts.isEmpty()) return
     val context=LocalContext.current
     val engine=remember(context,session.id,scripts) { SessionScriptEngine(context,session.id) }
@@ -103,6 +104,7 @@ private class SessionScriptEngine(context: Context, private val id: String) {
         put("worldbookNames",JsonArray(CardLibrary.names(state,id).map(::JsonPrimitive)))
         put("presets",JsonArray(CardLibrary.presets(state).map { buildJsonObject { put("id",it.id); put("name",it.name); put("enabled",it.enabled); put("revision",it.data.hashCode()) } }))
         put("activePresetId",session.presetId?.let(::JsonPrimitive) ?: JsonNull)
+        put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
         put("chat",JsonArray(session.messages.mapIndexed { index,message -> buildJsonObject {
             put("message_id",index); put("id",message.id); put("role",message.role)
             put("name",message.name.orEmpty()); put("message",message.content); put("content",message.content)

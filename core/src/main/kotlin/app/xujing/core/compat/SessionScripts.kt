@@ -1,6 +1,8 @@
 package app.xujing.core.compat
 
 import app.xujing.core.*
+import app.xujing.core.engine.objectOrEmpty
+import app.xujing.core.engine.unwrap
 import kotlinx.serialization.json.*
 
 data class SessionScript(val id: String, val name: String, val content: String, val info: String = "", val buttons: JsonArray = JsonArray(emptyList()))
@@ -37,6 +39,16 @@ object SessionScripts {
                 key to (pair.getOrNull(1) ?: JsonNull)
             }?.toMap()?.let(::JsonObject)
             visit(if(extensions.containsKey("tavern_helper")) helper?.get("scripts") else extensions["TavernHelper_scripts"],true,"script",role.id)
+        }
+        state.library.firstOrNull { it.enabled && it.kind=="preset" && it.id==session.presetId }?.let { preset ->
+            val extensions=unwrap(preset.data as? JsonObject ?: EmptyObject)["extensions"].objectOrEmpty()
+            val modern=extensions["tavern_helper"]
+            val helper=modern as? JsonObject ?: (modern as? JsonArray)?.mapNotNull { item ->
+                val pair=item as? JsonArray ?: return@mapNotNull null
+                val key=(pair.getOrNull(0) as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                key to (pair.getOrNull(1) ?: JsonNull)
+            }?.toMap()?.let(::JsonObject)
+            visit(if(extensions.containsKey("tavern_helper")) helper?.get("scripts") else extensions["TavernHelper_scripts"],true,"preset","preset:${preset.id}")
         }
         val disabled=session.extra.array("disabledSessionScriptIds").mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet()
         return result.distinctBy { it.id to it.content }.filter { includeDisabled || it.id !in disabled }
