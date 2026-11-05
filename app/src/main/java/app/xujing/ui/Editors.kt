@@ -94,14 +94,17 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
             OutlinedButton(onClick = { parsed.getOrNull()?.let { json = AppJson.encodeToString(JsonElement.serializer(), it) } }, enabled = parsed.isSuccess && !huge) { Icon(Icons.Outlined.DataObject, null, Modifier.size(18.dp)); Text("格式化") }
             if (document.data == EmptyObject && json.trim() == "{}") TextButton(onClick = { json = templateFor(kind) }) { Text("插入基础模板") }
         }
+        if (kind == "worldbook") WorldbookEntriesEditor(parsed.getOrNull()) { next ->
+            json = AppJson.encodeToString(JsonElement.serializer(), next)
+        }
         if (huge) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("文档较大（${json.length} 字符），已关闭原始 JSON 编辑", style = MaterialTheme.typography.titleSmall)
-                    Text("在输入框里渲染数 MB 文本会让界面卡死。请先用「导出」把资料存成文件，在电脑上编辑后再导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (kind == "worldbook") "请用上方的条目列表逐条编辑；需要整体替换时可导出后在电脑上编辑再导入。" else "在输入框里渲染数 MB 文本会让界面卡死。请先用「导出」把资料存成文件，在电脑上编辑后再导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            SelectionContainer {
+            if (kind != "worldbook") SelectionContainer {
                 Text(json.take(4000) + "…", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()))
             }
