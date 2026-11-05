@@ -51,15 +51,49 @@ class AppStore(context: Context, private val vault: SecretVault) : SQLiteOpenHel
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
 
+    /**
+     * Reads one payload without going through a full CursorWindow row.
+     * Android caps each CursorWindow at ~2 MiB, so a single large card/library row would otherwise fail
+     * with "Row too big to fit into CursorWindow"; substr() lets us stream it in chunks.
+     */
+    private fun readPayload(db: SQLiteDatabase, kind: String, id: String): ByteArray {
+        val length = db.rawQuery("SELECT length(payload) FROM records WHERE kind=? AND id=?", arrayOf(kind, id)).use { c ->
+            if (c.moveToFirst()) c.getLong(0) else -1L
+        }
+        require(length >= 0L) { "本地记录缺失：$kind/$id" }
+        if (length == 0L) return ByteArray(0)
+        val chunk = 512 * 1024L
+        if (length <= chunk) {
+            return db.rawQuery("SELECT payload FROM records WHERE kind=? AND id=?", arrayOf(kind, id)).use { c ->
+                require(c.moveToFirst()) { "本地记录缺失：$kind/$id" }
+                c.getBlob(0)
+            }
+        }
+        val output = java.io.ByteArrayOutputStream(length.toInt())
+        var offset = 1L
+        while (offset <= length) {
+            val part = db.rawQuery("SELECT substr(payload,$offset,$chunk) FROM records WHERE kind=? AND id=?", arrayOf(kind, id)).use { c ->
+                require(c.moveToFirst()) { "本地记录缺失：$kind/$id" }
+                c.getBlob(0)
+            }
+            if (part.isEmpty()) break
+            output.write(part)
+            offset += part.size
+        }
+        return output.toByteArray()
+    }
+
     @Synchronized fun load(): AppState? {
         val rows = mutableMapOf<String, MutableList<Pair<String, String>>>()
-        readableDatabase.rawQuery("SELECT kind,id,payload FROM records ORDER BY sequence", null).use { c ->
-            while(c.moveToNext()) {
-                val kind = c.getString(0); val id = c.getString(1)
-                val text = vault.open(c.getBlob(2)).toString(Charsets.UTF_8)
-                cache["$kind/$id"] = text
-                rows.getOrPut(kind) { mutableListOf() }.add(id to text)
-            }
+        val keys = mutableListOf<Pair<String, String>>()
+        readableDatabase.rawQuery("SELECT kind,id FROM records ORDER BY sequence", null).use { c ->
+            while(c.moveToNext()) keys += c.getString(0) to c.getString(1)
+        }
+        val db = readableDatabase
+        for ((kind, id) in keys) {
+            val text = vault.open(readPayload(db, kind, id)).toString(Charsets.UTF_8)
+            cache["$kind/$id"] = text
+            rows.getOrPut(kind) { mutableListOf() }.add(id to text)
         }
         val metadata = rows["state"]?.firstOrNull()?.second ?: return null
         val base = AppJson.decodeFromString<AppState>(metadata)
