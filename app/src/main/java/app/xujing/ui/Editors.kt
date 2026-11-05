@@ -4,7 +4,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -26,6 +29,7 @@ internal fun RoleEditor(role: RoleCard, onClose: () -> Unit, onSave: (RoleCard) 
     var raw by remember(role.id) { mutableStateOf(AppJson.encodeToString(JsonObject.serializer(), role.raw)) }
     var advanced by remember { mutableStateOf(false) }
     val parsedRaw = remember(raw) { runCatching { AppJson.parseToJsonElement(raw) as JsonObject } }
+    val hugeRaw = raw.length > 200_000
     EditorScaffold("编辑角色", onClose, onSave = { onSave(draft.copy(raw = parsedRaw.getOrThrow())) }, enabled = draft.name.isNotBlank() && parsedRaw.isSuccess) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) { Avatar(draft.name, draft.avatarPath); Text("角色设定将参与提示词编排。导入角色卡中的额外字段会保留。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         OutlinedTextField(draft.name, { draft = draft.copy(name = it) }, label = { Text("角色名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -49,7 +53,20 @@ internal fun RoleEditor(role: RoleCard, onClose: () -> Unit, onSave: (RoleCard) 
         TextButton(onClick = { advanced = !advanced }) { Icon(if (advanced) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null); Text("原始扩展数据") }
         if (advanced) {
             Text("供高级编辑使用。未知字段会保留在导出数据中；修改前请先备份。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            OutlinedTextField(raw, { raw = it }, label = { Text("原始 JSON 对象") }, modifier = Modifier.fillMaxWidth(), minLines = 8, textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), isError = parsedRaw.isFailure, supportingText = { if (parsedRaw.isFailure) Text("必须是有效的 JSON 对象") })
+            if (hugeRaw) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("原始数据较大（${raw.length} 字符），已关闭原始 JSON 编辑", style = MaterialTheme.typography.titleSmall)
+                        Text("在输入框里渲染数 MB 文本会让界面卡死。请导出角色卡后在电脑上编辑，再重新导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                SelectionContainer {
+                    Text(raw.take(4000) + "…", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()))
+                }
+            } else {
+                OutlinedTextField(raw, { raw = it }, label = { Text("原始 JSON 对象") }, modifier = Modifier.fillMaxWidth().height(320.dp), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), isError = parsedRaw.isFailure, supportingText = { if (parsedRaw.isFailure) Text("必须是有效的 JSON 对象") })
+            }
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -66,6 +83,7 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
     var kind by remember(document.id) { mutableStateOf(document.kind) }
     var enabled by remember(document.id) { mutableStateOf(document.enabled) }
     var json by remember(document.id) { mutableStateOf(AppJson.encodeToString(JsonElement.serializer(), document.data)) }
+    val huge = json.length > 200_000
     val parsed = remember(json) { runCatching { AppJson.parseToJsonElement(json) } }
     EditorScaffold("编辑${kindName(kind)}", onClose, onSave = { onSave(document.copy(name = name.trim(), kind = kind, enabled = enabled, data = parsed.getOrThrow())) }, enabled = name.isNotBlank() && parsed.isSuccess) {
         OutlinedTextField(name, { name = it }, label = { Text("资料名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -73,12 +91,25 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
         SettingSwitch("启用资料", "还需要在会话设置中选择要使用的世界书、预设或正则。", enabled, { enabled = it })
         Text("保留原有 JSON 结构与扩展字段。JSON 格式正确代表文件可以保存，具体条目是否可执行取决于兼容引擎支持范围。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { parsed.getOrNull()?.let { json = AppJson.encodeToString(JsonElement.serializer(), it) } }, enabled = parsed.isSuccess) { Icon(Icons.Outlined.DataObject, null, Modifier.size(18.dp)); Text("格式化") }
+            OutlinedButton(onClick = { parsed.getOrNull()?.let { json = AppJson.encodeToString(JsonElement.serializer(), it) } }, enabled = parsed.isSuccess && !huge) { Icon(Icons.Outlined.DataObject, null, Modifier.size(18.dp)); Text("格式化") }
             if (document.data == EmptyObject && json.trim() == "{}") TextButton(onClick = { json = templateFor(kind) }) { Text("插入基础模板") }
         }
-        OutlinedTextField(json, { json = it }, label = { Text("JSON 内容") }, modifier = Modifier.fillMaxWidth(), minLines = 16,
-            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace), isError = parsed.isFailure,
-            supportingText = { if (parsed.isFailure) Text(parsed.exceptionOrNull()?.message?.take(180) ?: "JSON 格式不正确") })
+        if (huge) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("文档较大（${json.length} 字符），已关闭原始 JSON 编辑", style = MaterialTheme.typography.titleSmall)
+                    Text("在输入框里渲染数 MB 文本会让界面卡死。请先用「导出」把资料存成文件，在电脑上编辑后再导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            SelectionContainer {
+                Text(json.take(4000) + "…", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()))
+            }
+        } else {
+            OutlinedTextField(json, { json = it }, label = { Text("JSON 内容") }, modifier = Modifier.fillMaxWidth().height(340.dp),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace), isError = parsed.isFailure,
+                supportingText = { if (parsed.isFailure) Text(parsed.exceptionOrNull()?.message?.take(180) ?: "JSON 格式不正确") })
+        }
         Spacer(Modifier.height(24.dp))
     }
 }

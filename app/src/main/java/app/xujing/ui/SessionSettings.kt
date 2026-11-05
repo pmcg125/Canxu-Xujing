@@ -87,7 +87,7 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             OutlinedTextField(memoryQuery,{ memoryQuery=it.filter(Char::isDigit) },label={ Text("用最近多少条消息检索记忆（1–30）") },singleLine=true,modifier=Modifier.fillMaxWidth(),isError=(memoryQuery.toIntOrNull() ?: 0) !in 1..30,supportingText={ Text("默认为 3 条；查询过长时会受模型输入长度限制。") })
             OutlinedButton(onClick=onModels) { Icon(Icons.Outlined.Memory,null); Spacer(Modifier.width(8.dp)); Text("嵌入模型与检索设置") }
             EditorText("剧情摘要",draft.summary,5) { draft=draft.copy(summary=it) }
-            OutlinedTextField(variables,{ variables=it },label={ Text("剧情变量 JSON") },minLines=5,isError=parsedVariables.isFailure,modifier=Modifier.fillMaxWidth(),supportingText={ if(parsedVariables.isFailure) Text("需要有效的 JSON 对象") })
+            OutlinedTextField(variables,{ variables=it },label={ Text("剧情变量 JSON") },isError=parsedVariables.isFailure,modifier=Modifier.fillMaxWidth().height(240.dp),supportingText={ if(parsedVariables.isFailure) Text("需要有效的 JSON 对象") })
         }
         CollapsibleSection("阅读外观") {
             Text("背景图片可在聊天菜单中选择。",style=MaterialTheme.typography.bodySmall)
