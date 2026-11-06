@@ -252,6 +252,8 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     }
     override fun openSession(id:String?) {
         clearSuggestions()
+        // A panel belongs to the session that requested it; never leak it across sessions.
+        _runtime.update { it.copy(scriptPanel=null) }
         if(id==null) { _runtime.update { it.copy(activeSessionId=null) }; return }
         val snapshot=state.value.sessions.firstOrNull { it.id==id } ?: return
         if(runtime.value.generating || !PromptEngine.needsMvuReplay(snapshot) || !PromptEngine.hasMvuState(state.value,snapshot)) {
@@ -567,6 +569,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     override fun clearError() { _runtime.update { it.copy(error=null) } }
     /** One-shot UI intent from the card runtime; the Compose shell consumes it. */
     override fun consumeOpenLibrary() { _runtime.update { it.copy(openLibraryKind=null) } }
+    override fun clearScriptPanel() { _runtime.update { it.copy(scriptPanel=null) } }
     override fun clearPrompt() { _runtime.update { it.copy(promptPreview=null) } }
     override fun clearSuggestions() {
         suggestionVersion++
@@ -746,6 +749,20 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             }
             "openPresetManager" -> if(runtime.value.generating) JsonPrimitive(false) else {
                 _runtime.update { it.copy(openLibraryKind="preset") }
+                JsonPrimitive(true)
+            }
+            "setScriptPanel" -> {
+                val html=obj.text("html")
+                require(html.isNotBlank()) { "面板内容不能为空" }
+                require(html.length<=512*1024) { "面板内容超过 512 KB" }
+                val width=((obj["width"] as? JsonPrimitive)?.intOrNull ?: 320).coerceIn(160,1200)
+                val height=((obj["height"] as? JsonPrimitive)?.intOrNull ?: 240).coerceIn(120,1200)
+                val panel=ScriptPanel(sessionId=s.id,sourceId=runtimeToken,title=obj.text("title").take(80),html=html,width=width,height=height,position=obj.text("position","bottom-end"))
+                _runtime.update { it.copy(scriptPanel=panel) }
+                JsonPrimitive(true)
+            }
+            "clearScriptPanel" -> {
+                _runtime.update { if(it.scriptPanel?.sessionId==s.id) it.copy(scriptPanel=null) else it }
                 JsonPrimitive(true)
             }
             "createPreset", "savePreset", "setPreset", "replacePreset", "updatePreset", "deletePreset", "renamePreset" -> commitPreset(s.id,method,obj)

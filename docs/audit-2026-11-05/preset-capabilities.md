@@ -527,6 +527,18 @@ anchors 的消费在生成编排：对每条 local prompt，先在剩余 identif
 | §2.5 打开管理器 | 已实现并实测 | `openPresetManager` RPC → `UiRuntime.openLibraryKind` → `XujingApp` 退出会话并打开资料库「预设」tab；6 个别名同步返回 `undefined` |
 | §2.6 预设变量 | 已实现并实测 | `CardVariables` 支持 `type:"preset"`，存 `AppState.compatibility["presetVariables"]`；快照透出 `presetVariables`；跨会话保留 |
 | §2.7 内置/远端合并 | 未实现（P2） | 需要一个“基座预设”来源，单独排期 |
+| 悬浮面板层 | 已实现并实测 | `setScriptPanel(html, options)` / `clearScriptPanel()`；宿主渲染可拖动覆盖层；`parent.document` 追加的 `position:fixed` 面板由 `session-runtime.js` 自动转发 |
+
+### 面板 API
+
+```js
+await setScriptPanel('<div>状态栏</div>', { title: '状态', width: 300, height: 200, position: 'bottom-end' });
+await clearScriptPanel();
+```
+
+- 面板由宿主 WebView 渲染，脚本拿不到 App 的 DOM；`XujingPanel.close()` 可让面板自己关闭。
+- 兼容层只转发追加到 `parent.document.body`、且内联样式含 `position:fixed` 的元素；脚本 iframe 自身的 DOM 仍不可见。
+- 切换会话时自动清空；面板默认右下角，可拖动标题栏移动。
 
 实测记录（模拟器 `emulator-5554`，角色卡 `QA Preset Checks` / `QA Preset Cap` / `QA Preset UI`）：
 

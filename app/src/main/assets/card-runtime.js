@@ -345,6 +345,9 @@
     getPresetManager, getPresetNames, getAllPresets, loadPreset, ensurePreset, getPreset, getPresetSettings, getPresetList, getCompletionPresetByName,
     createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, setPreset, savePreset, updatePreset, updatePresetWith,
     getLoadedPresetName: () => selectedPreset()?.name ?? '', getActivePresetId, setActivePresetId: selectPreset,
+    // Host-owned floating panel; scripts never touch the app DOM.
+    setScriptPanel: (html, options = {}) => request('setScriptPanel', { ...options, html: String(html ?? '') }),
+    clearScriptPanel: () => request('clearScriptPanel', {}),
     getCurrentMessageId: () => Math.max(0, (context.chat || []).findIndex(m => m.id === context.messageId)),
     getLastMessageId: () => (context.chat || []).length - 1,
     generate: options => request('generate', typeof options === 'string' ? { user_input: options } : options),
@@ -355,6 +358,8 @@
   window.TavernHelper = api;
   window.__xujingRequest = request;
   Object.entries(api).forEach(([name, value]) => { if (!(name in window)) window[name] = value; });
+  window.setScriptPanel = api.setScriptPanel;
+  window.clearScriptPanel = api.clearScriptPanel;
   window.SillyTavern = { getContext, getPresetManager };
   warmPreset();
   refreshPresetList();

@@ -91,6 +91,8 @@ private class SessionScriptEngine(context: Context, private val id: String) {
     private val ready=CompletableDeferred<Unit>()
     private val requests=mutableMapOf<String,CompletableDeferred<JsonElement>>()
     private val expectedScripts=mutableSetOf<String>()
+    // The outer runtime page is trusted so it can forward parent.document panels.
+    private val panelToken="xujing-session-host"
     private val initializedScripts=mutableSetOf<String>()
     private var sequence=0L
     private var closed=false
@@ -119,6 +121,7 @@ private class SessionScriptEngine(context: Context, private val id: String) {
         expectedScripts.clear(); expectedScripts.addAll(scripts.map { it.id })
         initializedScripts.clear()
         scripts.forEach { CardRuntimeHost.trust(id,it.id) }
+        CardRuntimeHost.trust(id,panelToken)
         view.settings.apply { javaScriptEnabled=true; domStorageEnabled=true; allowFileAccess=false; allowContentAccess=false; mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW }
         view.addJavascriptInterface(object {
             @JavascriptInterface fun height(value: Int) = Unit
@@ -217,6 +220,7 @@ private class SessionScriptEngine(context: Context, private val id: String) {
     fun close() {
         closed=true
         ready.cancel(); requests.values.toList().forEach { it.cancel() }; requests.clear()
+        CardRuntimeHost.untrust(id,panelToken)
         expectedScripts.forEach { CardRuntimeHost.untrust(id,it) }
         expectedScripts.clear(); initializedScripts.clear()
         if(SessionHooks.owner===this) { SessionHooks.dispatcher=null; SessionHooks.synchronize=null; SessionHooks.cancelEvents=null; SessionHooks.clearButtons(id); SessionHooks.owner=null; SessionHooks.sessionId=null }

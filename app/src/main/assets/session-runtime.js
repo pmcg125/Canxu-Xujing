@@ -83,6 +83,64 @@
       frameRecord(script);
     }
   };
+  // Best-effort bridge for presets that build a floating panel through parent.document.
+  // Only nodes appended to <body> with inline position:fixed are forwarded; iframes are ignored.
+  const installPanelCompat = () => {
+    if (window.__xujingPanelCompat) return;
+    window.__xujingPanelCompat = true;
+    const MAX = 400 * 1024;
+    let current = null, seq = 0, timer = 0;
+    const px = value => { const match = /(\d+(?:\.\d+)?)px/.exec(String(value || '')); return match ? Math.round(Number(match[1])) : 0; };
+    const styles = () => Array.from(document.querySelectorAll('style')).map(node => node.textContent || '').join('\n');
+    const request = (method, payload) => {
+      try { XujingBridge.request('xujing-session-host', 'panel-' + (++seq), method, JSON.stringify(payload || {})); }
+      catch (error) { console.error(error); }
+    };
+    const publish = node => {
+      if (!node || !node.isConnected) return;
+      const html = styles() + node.outerHTML;
+      if (!html || html.length > MAX) return;
+      request('setScriptPanel', {
+        html,
+        title: String(node.getAttribute('data-title') || node.title || '脚本面板'),
+        width: px(node.style.width) || 320,
+        height: px(node.style.height) || 260,
+        position: 'bottom-end',
+      });
+    };
+    const schedule = records => {
+      if (!current) return;
+      const touches = !records || records.some(record =>
+        current.contains(record.target) || record.target === current || document.head.contains(record.target));
+      if (!touches) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => publish(current), 180);
+    };
+    const looksFloating = node => {
+      if (!node || node.nodeType !== 1) return false;
+      if (['IFRAME', 'SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT'].includes(node.tagName)) return false;
+      return String(node.getAttribute('style') || '').replace(/\s+/g, '').toLowerCase().includes('position:fixed');
+    };
+    const appendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function (node) {
+      const result = appendChild.call(this, node);
+      try { if (this === document.body && looksFloating(node)) { current = node; publish(node); } }
+      catch (error) { console.error(error); }
+      return result;
+    };
+    new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+    new MutationObserver(schedule).observe(document.head, { subtree: true, childList: true, characterData: true });
+    setInterval(() => {
+      if (!current) return;
+      if (!current.isConnected || !document.body.contains(current)) {
+        current = null;
+        request('clearScriptPanel', {});
+      }
+    }, 1000);
+  };
+  if (document.body) installPanelCompat();
+  else document.addEventListener('DOMContentLoaded', installPanelCompat, { once: true });
+
   window.addEventListener('pagehide', () => {
     for (const script of scripts.values()) script.frame.remove();
     scripts.clear();

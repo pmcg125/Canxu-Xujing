@@ -2,6 +2,12 @@ package app.xujing.ui
 
 import app.xujing.core.*
 
+/** Host-rendered floating panel requested by a card/preset script. */
+data class ScriptPanel(
+    val sessionId: String, val sourceId: String, val title: String, val html: String,
+    val width: Int = 320, val height: Int = 240, val position: String = "bottom-end",
+)
+
 data class UiRuntime(
     val activeSessionId: String? = null, val generating: Boolean = false,
     val busy: Boolean = false, val status: String = "", val error: String? = null,
@@ -10,7 +16,7 @@ data class UiRuntime(
     val suggestions: List<String> = emptyList(),
     val fetchingModels: Boolean = false, val modelOptions: List<String> = emptyList(),
     val modelOptionsConnectionId: String? = null, val modelFetchVersion: Int = 0,
-    val openLibraryKind: String? = null,
+    val openLibraryKind: String? = null, val scriptPanel: ScriptPanel? = null,
 )
 interface AppActions {
     fun openSession(id: String?)
@@ -47,4 +53,5 @@ interface AppActions {
     fun clearSuggestions()
     fun fetchModels(connection: ApiConnection, apiKey: String?)
     fun consumeOpenLibrary()
+    fun clearScriptPanel()
 }
