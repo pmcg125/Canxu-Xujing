@@ -23,3 +23,29 @@ Android 端合成样本为 `tools/fixtures/card-worldbook-preset-qa.zip`。在�
 `node tools/test-card-runtime.cjs` 检查抽取的 EJS/Zod、原版 MVU schema 钩子、异步模板、失败变量回退、作用域和保存失败不触发成功事件。预期失败模板会输出一条警告。
 
 `python tools/make-runtime-fixture.py` 生成 `tools/fixtures/card-runtime-ejs-zod-qa.zip`。在隔离的测试资料库导入一次，打开 `Runtime QA EJS Zod B`，预期显示 `EJS:RuntimeUser:A&B` 及 `RUNTIME_PASS`。强制停止应用、重新打开会话后仍应通过。测试包括真实 WebView 模板渲染、Zod 注册事件、显式保存与消息作用域；不包括完整 MVU 自动更新链。模板内的嵌套 EJS 字面量需要避免被外层模板提前解析；此样本使用字符编码构造内层分隔符。测试会启用脚本，完成后恢复原开关。
+
+## 模拟器：逍遥 Android 12（默认）
+
+默认测试机改为逍遥的 Android 12 实例（`MEmu_1`，`memuc` 索引 1）。
+
+```powershell
+$memu = 'D:\Program Files\Microvirt\MEmu\memuc.exe'
+& $memu start -i 1
+
+$adb = 'D:\REA-Android\platform-tools\adb.exe'
+& $adb kill-server
+& $adb connect 127.0.0.1:21513
+& $adb -s 127.0.0.1:21513 shell getprop ro.build.version.release   # 12
+& $adb -s 127.0.0.1:21513 shell getprop ro.product.cpu.abi         # x86_64
+& $adb -s 127.0.0.1:21513 shell dumpsys webviewupdate | Select-String 'Current WebView'
+```
+
+安装 `app-x86_64-debug.apk`。当前实例：Android 12 / x86_64 / 720×1280 / density 240 / Chrome WebView 104。
+
+注意：
+
+- 只用平台工具的 adb，先 `adb kill-server`，避免和逍遥自带 adb 的 server 版本冲突。
+- UI 辅助脚本要显式传设备：`ui.ps1 -Serial 127.0.0.1:21513`。
+- 逍遥的文件选择器里点缩略图只会预览；要点文件名文本，才会把 URI 返回给残叙。
+- 首次安装后需要打开「设置 → 角色卡执行 → 允许角色卡脚本」，再在会话里开「运行角色独立脚本」。
+- 关闭实例：`& $memu stop -i 1`。
