@@ -19,12 +19,37 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
     var summaryInterval by remember(session.id) { mutableStateOf((session.extra["summaryInterval"] as? JsonPrimitive)?.intOrNull?.toString() ?: "10") }
     var summaryKeep by remember(session.id) { mutableStateOf((session.extra["summaryKeepMessages"] as? JsonPrimitive)?.intOrNull?.toString() ?: "12") }
     var fontSize by remember(session.id) { mutableFloatStateOf(session.extra["fontSize"]?.jsonPrimitive?.floatOrNull ?: state.preferences.fontSize) }
+    // Snapshot of the stored sub-object; only keys the user actually changed are merged back, unknown fields are kept.
+    val worldInfoOriginal=remember(session.id) { session.extra["worldInfo"] as? JsonObject ?: JsonObject(emptyMap()) }
+    var scanDepthText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("scanDepth")) }
+    var maxScanDepthText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("maxScanDepth")) }
+    var minActivationsText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("minActivations")) }
+    var maxRecursionStepsText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("maxRecursionSteps")) }
+    var budgetPercentText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("budgetPercent")) }
+    var budgetCapText by remember(session.id) { mutableStateOf(worldInfoOriginal.numberText("budgetCap")) }
+    var recursiveText by remember(session.id) { mutableStateOf<String?>(worldInfoOriginal.flagText("recursive")) }
+    var groupScoringText by remember(session.id) { mutableStateOf<String?>(worldInfoOriginal.flagText("useGroupScoring")) }
     val parsedVariables=remember(variables) { runCatching { AppJson.parseToJsonElement(variables).jsonObject } }
     val selectedStyles=draft.extra.array("styleIds").map { it.jsonPrimitive.content }
     val selectedPersona=draft.extra.text("personaId").ifBlank { null }
+    val worldInfoValid=numberFieldValid(scanDepthText,worldInfoOriginal,"scanDepth",0..1000) && numberFieldValid(maxScanDepthText,worldInfoOriginal,"maxScanDepth",0..1000) && numberFieldValid(minActivationsText,worldInfoOriginal,"minActivations",0..1000) && numberFieldValid(maxRecursionStepsText,worldInfoOriginal,"maxRecursionSteps",1..32) && numberFieldValid(budgetPercentText,worldInfoOriginal,"budgetPercent",0..100,decimal=true) && numberFieldValid(budgetCapText,worldInfoOriginal,"budgetCap",0..1000000)
+    val worldInfoShadowed=remember(session.id) {
+        listOf("world_info","worldbookSettings","worldbook_settings").mapNotNull { name ->
+            val obj=session.extra[name] as? JsonObject ?: return@mapNotNull null
+            if(obj.keys.any { it in worldInfoKeys || it=="depth" }) name else null
+        }
+    }
+    // The engine reads depth before scanDepth, so an existing depth key would shadow this page's scanDepth.
+    val worldInfoDepthShadowed=worldInfoOriginal.containsKey("depth")
     EditorScaffold("会话设置",onClose,onSave={
-        onSave(draft.copy(variables=parsedVariables.getOrThrow(),extra=JsonObject(draft.extra+mapOf("maxHistoryMessages" to JsonPrimitive(history.toInt()),"memoryQueryMessages" to JsonPrimitive(memoryQuery.toInt()),"fontSize" to JsonPrimitive(fontSize),"summaryInterval" to JsonPrimitive(summaryInterval.toInt()),"summaryKeepMessages" to JsonPrimitive(summaryKeep.toInt())))))
-    },enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (memoryQuery.toIntOrNull() ?: 0) in 1..30 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000) {
+        val worldInfoResult=worldInfoMerge(worldInfoOriginal,mapOf<String,String?>(
+            "scanDepth" to scanDepthText,"maxScanDepth" to maxScanDepthText,"minActivations" to minActivationsText,
+            "maxRecursionSteps" to maxRecursionStepsText,"budgetPercent" to budgetPercentText,"budgetCap" to budgetCapText,
+            "recursive" to recursiveText,"useGroupScoring" to groupScoringText,
+        ))
+        val worldInfoExtra:Map<String,JsonElement> = if(worldInfoResult==worldInfoOriginal) emptyMap() else mapOf("worldInfo" to worldInfoResult)
+        onSave(draft.copy(variables=parsedVariables.getOrThrow(),extra=JsonObject(draft.extra+mapOf<String,JsonElement>("maxHistoryMessages" to JsonPrimitive(history.toInt()),"memoryQueryMessages" to JsonPrimitive(memoryQuery.toInt()),"fontSize" to JsonPrimitive(fontSize),"summaryInterval" to JsonPrimitive(summaryInterval.toInt()),"summaryKeepMessages" to JsonPrimitive(summaryKeep.toInt()))+worldInfoExtra)))
+    },enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (memoryQuery.toIntOrNull() ?: 0) in 1..30 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000 && worldInfoValid) {
         OutlinedTextField(draft.title,{ draft=draft.copy(title=it) },label={ Text("会话名称") },singleLine=true,modifier=Modifier.fillMaxWidth())
         CollapsibleSection("参与角色", initiallyExpanded = true) {
             if(state.roles.isEmpty()) Text("请先创建或导入角色。")
@@ -69,6 +94,22 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             }
             SectionTitle("世界书", "选择会话绑定的世界书；角色卡内嵌世界书由兼容引擎读取。")
             MultiSelection(state.library.filter { it.kind=="worldbook" && it.enabled }.map { it.id to it.name },draft.worldbookIds) { draft=draft.copy(worldbookIds=it) }
+            CollapsibleSection("世界书高级设置","扫描深度、递归、预算与组评分。留空表示不写入该键，继续继承。") {
+                Text("继承优先级：条目显式值 → 书级 scan_depth → 会话高级设置 → 内置默认。留空等于删除该键（继承），显式 0 不等于“未设置”。这些值写入本会话的 worldInfo；条目和书级配置的归属不变。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                WorldbookNumberField("全局扫描深度",scanDepthText,worldInfoOriginal,"scanDepth","0 表示不扫描聊天历史；留空沿用内置默认。",0..1000,{ scanDepthText=it },{ scanDepthText="" })
+                WorldbookNumberField("最大扫描深度",maxScanDepthText,worldInfoOriginal,"maxScanDepth","仅在“最少激活条目”不足时用于扩大扫描；留空或 0 表示最多回看 1000 条历史，小于扫描深度时按扫描深度处理。",0..1000,{ maxScanDepthText=it },{ maxScanDepthText="" })
+                WorldbookNumberField("最少激活条目",minActivationsText,worldInfoOriginal,"minActivations","0 表示不因条目数量不足而扩大扫描窗口。",0..1000,{ minActivationsText=it },{ minActivationsText="" })
+                WorldbookNumberField("递归步数",maxRecursionStepsText,worldInfoOriginal,"maxRecursionSteps","已激活条目可继续触发新匹配的最大轮数。",1..32,{ maxRecursionStepsText=it },{ maxRecursionStepsText="" })
+                WorldbookNumberField("预算比例",budgetPercentText,worldInfoOriginal,"budgetPercent","占聊天上下文的百分比；0 表示不使用比例预算。",0..100,{ budgetPercentText=it },{ budgetPercentText="" },decimal=true)
+                WorldbookNumberField("预算上限",budgetCapText,worldInfoOriginal,"budgetCap","世界书估算 token 上限；0 表示不设上限。",0..1000000,{ budgetCapText=it },{ budgetCapText="" })
+                SettingSwitch("递归扫描","允许已激活条目触发新的关键词匹配；关闭后只做首轮激活。",recursiveText?.toBoolean() ?: true) { on -> recursiveText=if(recursiveText==null && on) null else on.toString() }
+                if(recursiveText!=null) TextButton(onClick={ recursiveText=null }) { Text("恢复默认（递归开启）") }
+                SettingSwitch("互斥组关键词评分","同一互斥组内按主/副关键词命中情况评分选择，而不是只看权重随机。",groupScoringText?.toBoolean() ?: false) { on -> groupScoringText=if(groupScoringText==null && !on) null else on.toString() }
+                if(groupScoringText!=null) TextButton(onClick={ groupScoringText=null }) { Text("恢复默认（评分关闭）") }
+                Text("世界书最终激活条目和排除原因可在本轮提示词详情中核对；普通聊天正文不显示这些调试信息。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(worldInfoShadowed.isNotEmpty()) Text("另在 ${worldInfoShadowed.joinToString("、")} 中也存在这些配置；引擎按 worldInfo → world_info → worldbookSettings → worldbook_settings 依次合并，同名键以靠后的配置为准，本页只写入 worldInfo。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+                if(worldInfoDepthShadowed) Text("worldInfo 里已有 depth 键，引擎读取全局扫描深度时优先于 scanDepth；本页写入的 scanDepth 会被它覆盖。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+            }
             SectionTitle("正则")
             MultiSelection(state.library.filter { it.kind=="regex" && it.enabled }.map { it.id to it.name },draft.regexIds) { draft=draft.copy(regexIds=it) }
             SectionTitle("回复文风")
@@ -121,4 +162,51 @@ private fun MultiSelection(options:List<Pair<String,String>>,selected:List<Strin
         Checkbox(checked=id in selected,onCheckedChange={ onChange(if(it) (selected+id).distinct() else selected-id) })
         Text(name,modifier=Modifier.padding(top=12.dp),style=MaterialTheme.typography.bodyMedium)
     } }
+}
+
+private val worldInfoBooleanKeys=setOf("recursive","useGroupScoring")
+private val worldInfoKeys=setOf("scanDepth","maxScanDepth","minActivations","maxRecursionSteps","budgetPercent","budgetCap")+worldInfoBooleanKeys
+
+/** Compact text for an existing number; blank means the key is absent (inherit). */
+private fun JsonObject.numberText(key:String):String = when(val p=this[key] as? JsonPrimitive) {
+    null -> ""
+    else -> p.doubleOrNull?.takeIf { it.isFinite() }?.let { if(it==it.toLong().toDouble()) it.toLong().toString() else it.toString() } ?: ""
+}
+
+/** Explicit boolean text for an existing key, using the same leniency as the engine (1/0, yes/on). */
+private fun JsonObject.flagText(key:String):String? {
+    val p=this[key] as? JsonPrimitive ?: return null
+    val value=p.booleanOrNull ?: p.doubleOrNull?.let { it!=0.0 } ?: when(p.content.trim().lowercase()) { "true","yes","on" -> true; "false","no","off" -> false; else -> null }
+    return value?.toString()
+}
+
+private fun intInRange(text:String,range:IntRange):Boolean = text.isBlank() || text.toIntOrNull()?.let { it in range }==true
+private fun decimalInRange(text:String,range:IntRange):Boolean = text.isBlank() || text.toDoubleOrNull()?.let { it>=range.first && it<=range.last }==true
+/** An untouched imported value must never block saving the session, even if it is outside the editing range. */
+private fun numberFieldValid(value:String,original:JsonObject,key:String,range:IntRange,decimal:Boolean=false):Boolean =
+    value==original.numberText(key) || if(decimal) decimalInRange(value,range) else intInRange(value,range)
+private fun numberValue(text:String):JsonElement = text.toDoubleOrNull()?.let { d -> if(d==d.toLong().toDouble()) JsonPrimitive(d.toLong()) else JsonPrimitive(d) } ?: JsonPrimitive(0)
+
+/**
+ * Copy the stored object and only touch keys whose text differs from the original snapshot.
+ * Blank/null edit means "remove the key" so the entry/book/default value applies again.
+ */
+private fun worldInfoMerge(original:JsonObject,edits:Map<String,String?>):JsonObject {
+    val out=original.toMutableMap()
+    edits.forEach { (key,value) ->
+        val originalText=if(key in worldInfoBooleanKeys) original.flagText(key) else original.numberText(key)
+        if(value==originalText) return@forEach
+        if(value.isNullOrBlank()) out.remove(key)
+        else out[key]=if(key in worldInfoBooleanKeys) JsonPrimitive(value.toBoolean()) else numberValue(value)
+    }
+    return JsonObject(out)
+}
+
+@Composable
+private fun WorldbookNumberField(label:String,value:String,original:JsonObject,key:String,hint:String,range:IntRange,onValue:(String)->Unit,onRestore:()->Unit,decimal:Boolean=false) {
+    val valid=numberFieldValid(value,original,key,range,decimal)
+    OutlinedTextField(value,{ onValue(it.filter { c -> c.isDigit() || (decimal && c=='.') }.take(7)) },
+        label={ Text("$label（${range.first}–${range.last}）") },singleLine=true,isError=!valid,modifier=Modifier.fillMaxWidth(),
+        supportingText={ Text(if(valid) hint else "请输入 ${range.first}–${range.last} 的${if(decimal) "数值" else "整数"}；留空表示继承。") })
+    if(value.isNotBlank()) TextButton(onClick=onRestore) { Text("恢复继承/默认") }
 }
