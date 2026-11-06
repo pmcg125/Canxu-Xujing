@@ -35,6 +35,9 @@ powershell -NoProfile -File D:\Canxu-project\Xujing\build.ps1 :app:assembleDebug
 
 # 纯 Kotlin 回归
 powershell -NoProfile -File D:\Canxu-project\Xujing\build.ps1 :core:regressionChecks -Offline
+
+# 只构建一个 ABI（不生成 universal 和其他 ABI）
+powershell -NoProfile -File D:\Canxu-project\Xujing\build.ps1 :app:assembleDebug -Offline -Abi arm64-v8a
 ```
 
 `build.ps1` 会先同步本地 Maven 缓存，再调用 Gradle；不安装应用、不跑模拟器。

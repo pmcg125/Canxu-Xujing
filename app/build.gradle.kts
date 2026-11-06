@@ -12,7 +12,9 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
     kotlinOptions { jvmTarget = "21" }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
-    splits { abi { isEnable = true; reset(); include("arm64-v8a", "armeabi-v7a", "x86", "x86_64"); isUniversalApk = true } }
+    // -Pxujing.onlyAbi=arm64-v8a builds a single ABI without the universal APK.
+    val onlyAbi = providers.gradleProperty("xujing.onlyAbi").orNull
+    splits { abi { isEnable = true; reset(); if (onlyAbi != null) include(onlyAbi) else include("arm64-v8a", "armeabi-v7a", "x86", "x86_64"); isUniversalApk = onlyAbi == null } }
     buildTypes { release { isMinifyEnabled = false } }
 }
 dependencies {

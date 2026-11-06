@@ -1,4 +1,4 @@
-param([string]$Task = 'assembleDebug', [switch]$Offline)
+param([string]$Task = 'assembleDebug', [switch]$Offline, [string]$Abi = '')
 $ErrorActionPreference = 'Stop'
 $env:JAVA_HOME = 'D:\REA-Android\jdk'
 $env:ANDROID_HOME = 'D:\Roleplay\tooling\android-sdk'
@@ -11,5 +11,6 @@ New-Item -ItemType Directory -Force -Path $env:TEMP, $env:ANDROID_USER_HOME | Ou
 & (Join-Path $PSScriptRoot 'tools\Sync-DependencyCache.ps1') -RepositoryDirectory $env:XUJING_LOCAL_MAVEN
 $buildArguments = @('-p', $PSScriptRoot, $Task, '--console=plain')
 if ($Offline) { $buildArguments += '--offline' }
+if ($Abi) { $buildArguments += "-Pxujing.onlyAbi=$Abi" }
 & 'D:\Roleplay\tooling\gradle-8.13\bin\gradle.bat' @buildArguments
 exit $LASTEXITCODE
