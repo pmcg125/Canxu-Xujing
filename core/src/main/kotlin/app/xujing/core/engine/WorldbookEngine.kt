@@ -75,38 +75,34 @@ private fun resolveBookScanDepth(data: JsonElement, extra: JsonObject): Int? {
 }
 
 /** 参考 rm() 中的角色身份：角色文件名、角色名、角色标签。 */
-private data class CharacterRef(val names: Set<String>, val tags: Set<String>)
+private data class CharacterRef(val name: String, val filename: String, val tags: Set<String>)
 
 private fun characterRef(role: RoleCard): CharacterRef {
     val raw = roleData(role)
     val rawRoot = role.raw.objectOrEmpty()
     val extensions = raw["extensions"].objectOrEmpty()
-    val names = listOf(
-        role.name, role.id,
-        raw.str("name"), raw.str("filename"), raw.str("character_filename"),
-        extensions.str("piupiu_character_filename"), extensions.str("filename"),
-    ).map(String::trim).filter(String::isNotEmpty).toSet()
-    val tags = (
-        rawRoot["tags"].strings() +
-            rawRoot["data"].objectOrEmpty()["tags"].strings() +
-            raw["tags"].strings() +
-            extensions["tags"].strings()
-        ).map(String::trim).filter(String::isNotEmpty).toSet()
-    return CharacterRef(names, tags)
+    val name = raw.str("name").ifBlank { role.name }.trim()
+    val filename = extensions.str("piupiu_character_filename").ifBlank { name }.trim()
+    val tags = ((raw["tags"] as? JsonArray)
+        ?: (rawRoot["data"].objectOrEmpty()["tags"] as? JsonArray)
+        ?: JsonArray(emptyList())).strings().map(String::trim).filter(String::isNotEmpty).toSet()
+    return CharacterRef(name, filename, tags)
 }
 
-private fun characterFilterMatches(filter: JsonObject, characters: List<CharacterRef>): Boolean {
+private fun characterFilterMatches(filter: JsonObject, source: CharacterRef?, focus: CharacterRef?): Boolean {
     val names = filter.first("names", "name").strings()
     val tags = filter.first("tags", "tag").strings()
-    return characters.any { ref -> names.any { it in ref.names } || tags.any { it in ref.tags } }
+    val sourceNames = listOfNotNull(source?.filename, source?.name, focus?.name).filter(String::isNotEmpty)
+    val sourceTags = source?.tags ?: focus?.tags.orEmpty()
+    return names.any { it in sourceNames } || tags.any { it in sourceTags }
 }
 
 /** 空 names+tags 始终放行；否则按 isExclude 取反。参考 rm() 20739-20759。 */
-private fun characterFilterAllows(filter: JsonObject, characters: List<CharacterRef>): Boolean {
+private fun characterFilterAllows(filter: JsonObject, source: CharacterRef?, focus: CharacterRef?): Boolean {
     val names = filter.first("names", "name").strings()
     val tags = filter.first("tags", "tag").strings()
     if (names.isEmpty() && tags.isEmpty()) return true
-    val matched = characterFilterMatches(filter, characters)
+    val matched = characterFilterMatches(filter, source, focus)
     return matched != filter.flag("isExclude", "is_exclude")
 }
 
@@ -134,7 +130,7 @@ internal object WorldbookEngine {
         val sourceOrder = config.first("sourceOrder", "source_order").strings().ifEmpty { listOf("chat", "persona", "character", "global") }
         val entries = mutableListOf<WorldEntry>()
         val triggerMode = worldTriggerMode(mode)
-        fun collect(id: String, data: JsonElement, source: String, characters: List<CharacterRef>, extra: JsonObject = EmptyObject) {
+        fun collect(id: String, data: JsonElement, source: String, sourceCharacter: CharacterRef?, focusCharacter: CharacterRef?, extra: JsonObject = EmptyObject) {
             val entryBookScanDepth = resolveBookScanDepth(data, extra)
             records(data, "entries", "world_book_entries", "worldBookEntries").forEach { (key, entry) ->
                 val ext = entry["extensions"].objectOrEmpty()
@@ -143,7 +139,7 @@ internal object WorldbookEngine {
                 val title = normalized.str("comment", "name", "title", default = "$id/$key")
                 // 角色过滤与生成模式过滤在收集阶段执行，和参考 rm()/im() 一样先于常驻、sticky、递归和预算。
                 val filter = normalized.first("characterFilter", "character_filter") as? JsonObject
-                if (filter != null && filter.isNotEmpty() && !characterFilterAllows(filter, characters)) {
+                if (filter != null && filter.isNotEmpty() && !characterFilterAllows(filter, sourceCharacter, focusCharacter)) {
                     val reason = if (filter.flag("isExclude", "is_exclude")) "命中排除名单" else "角色名/标签不匹配"
                     diagnostics += "世界书 $title 被 characterFilter 排除（$reason）。"
                     return@forEach
@@ -209,12 +205,12 @@ internal object WorldbookEngine {
                 selected.singleOrNull()?.id
             }
         }.toSet()
-        // 同一本书被多个角色绑定时，参考只保留一个来源；这里按会话角色顺序取第一个所有者。
+        // 参考按来源顺序更新附加书映射；同一本书重复绑定时，后一个角色覆盖前一个。
         val characterOwners = linkedMapOf<String, RoleCard>()
         roles.forEach { role ->
             val extensions=roleData(role)["extensions"].objectOrEmpty()
             val references=listOf(extensions.str("world")) + extensions["tavern_helper"].objectOrEmpty()["additional_worldbooks"].strings()
-            resolveBooks(references.filter(String::isNotBlank)).forEach { id -> characterOwners.putIfAbsent(id, role) }
+            resolveBooks(references.filter(String::isNotBlank)).forEach { id -> characterOwners[id] = role }
         }
         val characterIds=characterOwners.keys
         val sessionBooks=session.extra["globalWorldBookNames"].strings()+listOf(session.extra.str("chatWorldBookName"))
@@ -229,33 +225,34 @@ internal object WorldbookEngine {
                 else -> "global"
             }
             val global = document.extra.flag("global", "isGlobal", "is_global")
-            val ownerRef = if (source == "character") characterOwners[document.id]?.let { roleRefs[it.id] } else null
+            // 角色附加书同时被聊天绑定时，来源角色身份仍用于过滤，即使注入来源优先记为 chat。
+            val ownerRef = characterOwners[document.id]?.let { roleRefs[it.id] }
             if (explicitlyBound || global || source == "persona" || source == "character") {
-                collect(document.id, document.data, source, listOfNotNull(ownerRef, focusRef), document.extra)
+                collect(document.id, document.data, source, ownerRef ?: focusRef, focusRef, document.extra)
             }
         }
         roles.forEach { role ->
             val raw = roleData(role)
             listOf(raw["character_book"], raw["characterBook"], raw["worldbook"], raw["world_book"], raw["extensions"].objectOrEmpty()["character_book"])
                 .filterNotNull().distinct().forEachIndexed { index, book ->
-                    collect("role:${role.id}:$index", book, "character", listOfNotNull(roleRefs[role.id]))
+                    collect("role:${role.id}:$index", book, "character", roleRefs[role.id], focusRef)
                 }
         }
         val sorted = entries.distinctBy(WorldEntry::id).sortedWith(compareBy<WorldEntry> { it.sourceRank }.thenByDescending { it.order }.thenBy { it.id })
         // 会话全局值：默认 4（本项目既有默认，不改为参考实现的 2）；显式 0 合法。
-        val globalScanDepth = config.scanDepthOverride("depth", "scanDepth", "world_info_depth", "scan_depth") ?: 4
-        // maxDepth/maxScanDepth 是扩大扫描的上限。缺失时沿用全局值（不扩大）；
-        // 显式 0 按参考 23049-23059 视为不设上限，只受 1000 条历史上限约束。
+        val globalScanDepth = (config.scanDepthOverride("depth", "scanDepth", "world_info_depth", "scan_depth") ?: 4).coerceIn(0, MaxHistoryDepth)
+        // maxDepth 缺失或为 0 时允许扩大至现有历史长度。
         val maxDepthValue = config.scanDepthOverride("maxScanDepth", "max_scan_depth", "maxDepth", "max_depth")
-        // 参考 23049-23059：maxDepth 缺失或显式为 0 时，扩大上限是整段历史（再受 1000 条上限约束）。
+        // 参考 23049-23059：正数 maxDepth 按包含末端的索引处理，因此要加一。
         val maxExtraDepth = when {
-            maxDepthValue == null || maxDepthValue == 0 -> MaxHistoryDepth - globalScanDepth
-            else -> (maxDepthValue - globalScanDepth).coerceAtLeast(0)
-        }.coerceIn(0, MaxHistoryDepth)
+            maxDepthValue == null || maxDepthValue == 0 -> session.messages.size
+            else -> (minOf(session.messages.size, maxDepthValue.coerceAtMost(MaxHistoryDepth) + 1) - globalScanDepth).coerceAtLeast(0)
+        }.coerceIn(0, minOf(MaxHistoryDepth, session.messages.size))
         val minActivations = config.num("minActivations", "min_activations", default = 0).coerceAtLeast(0)
         val groupScoring = config.flag("useGroupScoring", "use_group_scoring")
         val recursion = config.flag("recursive", "recursion", "world_info_recursive", default = true)
-        val recursionLimit = config.num("maxRecursionSteps", "max_recursion_steps", "max_recursion", default = 8).coerceIn(1, 32)
+        // 原版 0 表示不限制递归轮数；正值是轮数上限。
+        val recursionLimit = config.num("maxRecursionSteps", "max_recursion_steps", "max_recursion", default = 8).coerceIn(0, 32)
         val percent = config.decimal("budgetPercent", "budget_percent", "world_info_budget", default = 25.0).coerceIn(0.0, 100.0)
         val configuredCap = config.num("budgetCap", "budget_cap", "world_info_budget_cap", default = 2048).coerceAtLeast(0)
         val budget = if (percent > 0.0) (contextTokens * percent / 100).toInt().let { if (configuredCap > 0) minOf(it, configuredCap) else it } else configuredCap.takeIf { it > 0 }
@@ -268,10 +265,8 @@ internal object WorldbookEngine {
         var scanExpansion = 0
         var maxScanWindow = globalScanDepth
         var recursiveText = ""
-        val groups = mutableSetOf<String>()
         val chance = mutableMapOf<String, Boolean>()
-        val probabilityFailed = mutableSetOf<String>()
-        val groupChoice = mutableMapOf<String, String>()
+        val processedCandidates = mutableSetOf<String>()
 
         fun entryGroup(entry: WorldEntry): List<String> = entry.data.first("group", "groups", "inclusion_group").strings()
         fun scanDepthFor(entry: WorldEntry): Int {
@@ -350,48 +345,59 @@ internal object WorldbookEngine {
             // 概率不在 eligible 阶段判定；参考 22740-22774 在组选择之后、预算之前抽取。
             return true
         }
-        val lastDelayedStep = sorted.maxOfOrNull(::delayUntilStep)?.coerceAtMost(recursionLimit - 1) ?: 0
+        val lastDelayedStep = (sorted.maxOfOrNull(::delayUntilStep) ?: 0)
+            .coerceAtMost(if (recursionLimit > 0) recursionLimit - 1 else MaxHistoryDepth)
         // 显式 scanDepth 不参与最小激活扩大；没有可扩大的条目时不再空转。
         val canExpandScan = sorted.any { it.explicitScanDepth == null }
+        // 无上限模式仍设防止异常配置导致长时间循环的安全边界；正常轮次最多依次激活每个条目、等待延迟并扩大历史。
+        val unlimitedSafetyLimit = minOf(Int.MAX_VALUE.toLong(), 1L + sorted.size + lastDelayedStep + maxExtraDepth).toInt()
+        val roundLimit = if (!recursion) 1 else if (recursionLimit == 0) unlimitedSafetyLimit else recursionLimit
         var step = 0
-        while (step < recursionLimit) {
-            val candidates = sorted.filter { it.id !in active && it.id !in probabilityFailed && eligible(it, step) }
+        while (step < roundLimit) {
+            val candidates = sorted.filter { it.id !in active && it.id !in processedCandidates && eligible(it, step) }
             // 参考 22683-22721：组评分文本使用最近 1000 条历史与递归文本，而不是条目自身的 scanDepth 窗口。
             val scoreText = if (groupScoring || candidates.any { it.groupScoring == true }) {
                 val history = session.messages.takeLast(MaxHistoryDepth).joinToString("\n") { it.content }
                 if (recursiveText.isBlank()) history else history + "\n" + recursiveText
             } else ""
             val grouped = candidates.flatMap { e -> entryGroup(e).map { it to e } }.groupBy({ it.first }, { it.second })
+            val selectedIds = candidates.filter { entryGroup(it).isEmpty() }.mapTo(mutableSetOf()) { it.id }
             grouped.forEach { (name, candidatesInGroup) ->
-                if (name !in groupChoice) {
-                    val sticky = candidatesInGroup.find { priorEntries[it.id].objectOrEmpty().num("stickyUntil", default = -1) >= turn }
-                    val override = candidatesInGroup.filter { it.data.flag("groupOverride", "group_override") }.maxByOrNull { it.order }
-                    var pool = candidatesInGroup
-                    // 顺序保持 参考 om()：sticky → groupOverride → 评分筛选 → 权重随机。
-                    if (sticky == null && override == null &&
-                        (groupScoring || candidatesInGroup.any { it.groupScoring == true })) {
-                        val scores = candidatesInGroup.associate { it.id to groupScore(it, scoreText) }
-                        val best = scores.values.maxOrNull() ?: 0
-                        val kept = candidatesInGroup.filter { entry ->
-                            // 未启用评分的条目（条目 false 或全局关闭）无条件保留；启用评分的条目只保留最高分。
-                            !(entry.groupScoring ?: groupScoring) || scores[entry.id] == best
-                        }
-                        if (kept.size < candidatesInGroup.size) {
-                            diagnostics += "世界书互斥组 $name 关键词评分排除 ${candidatesInGroup.size - kept.size} 条，保留 ${kept.size} 条。"
-                        }
-                        pool = kept
+                val sticky = candidatesInGroup.filter {
+                    val previous = priorEntries[it.id].objectOrEmpty()
+                    previous.num("lastActivatedTurn", default = -1) >= 0 && previous.num("stickyUntil", default = -1) >= turn
+                }
+                val override = candidatesInGroup.filter { it.data.flag("groupOverride", "group_override") }.maxByOrNull { it.order }
+                var pool = candidatesInGroup
+                // 顺序保持 参考 om()：sticky → groupOverride → 评分筛选 → 权重随机。
+                if (sticky.isEmpty() && override == null &&
+                    (groupScoring || candidatesInGroup.any { it.groupScoring == true })) {
+                    val scores = candidatesInGroup.associate { it.id to groupScore(it, scoreText) }
+                    val best = scores.values.maxOrNull() ?: 0
+                    val kept = candidatesInGroup.filter { entry ->
+                        // 未启用评分的条目（条目 false 或全局关闭）无条件保留；启用评分的条目只保留最高分。
+                        !(entry.groupScoring ?: groupScoring) || scores[entry.id] == best
                     }
+                    if (kept.size < candidatesInGroup.size) {
+                        diagnostics += "世界书互斥组 $name 关键词评分排除 ${candidatesInGroup.size - kept.size} 条，保留 ${kept.size} 条。"
+                    }
+                    pool = kept
+                }
+                if (sticky.isNotEmpty()) selectedIds.addAll(sticky.map { it.id })
+                else if (override != null) selectedIds.add(override.id)
+                else {
                     val weighted = pool.map { it to it.data.decimal("groupWeight", "group_weight", default = 100.0).coerceAtLeast(0.0) }
                     val total = weighted.sumOf { it.second }
-                    var draw = if (total > 0) random.nextDouble(total) else 0.0
-                    val selected = sticky ?: override ?: weighted.firstOrNull { (_, weight) -> draw -= weight; draw < 0 }?.first ?: pool.first()
-                    groupChoice[name] = selected.id
+                    var draw = random.nextDouble(maxOf(1.0, total))
+                    val selected = weighted.firstOrNull { (_, weight) -> draw -= weight; draw <= 0 }?.first ?: pool.last()
+                    selectedIds.add(selected.id)
                 }
             }
-            var added = 0
+            // 多组成员在任一组获选即可保留；已经参与选择的条目不会在后续轮次重试。
+            processedCandidates.addAll(candidates.map { it.id })
+            var outgoingAdded = false
             candidates.forEach { entry ->
-                val membership = entryGroup(entry)
-                if (membership.any { it in groups || groupChoice[it] != entry.id }) return@forEach
+                if (entry.id !in selectedIds) return@forEach
                 // 参考 22740-22774：组选择之后再判定概率；sticky 条目直接通过。
                 val previousState = priorEntries[entry.id].objectOrEmpty()
                 val stickyNow = previousState.num("lastActivatedTurn", default = -1) >= 0 &&
@@ -400,7 +406,7 @@ internal object WorldbookEngine {
                     stickyNow || !entry.data.flag("useProbability", "use_probability", default = true) ||
                         random.nextDouble(100.0) < entry.data.decimal("probability", default = 100.0).coerceIn(0.0, 100.0)
                 }
-                if (!probabilityAllowed) { probabilityFailed += entry.id; return@forEach }
+                if (!probabilityAllowed) return@forEach
                 val raw = entry.data.str("content", "text")
                 // Do not apply side effects to a rejected budget candidate.
                 val estimated = estimatedTokens(macros.expand(raw, effects = false))
@@ -413,8 +419,7 @@ internal object WorldbookEngine {
                 if (content.isBlank()) return@forEach
                 active[entry.id] = entry to content
                 spent += estimated
-                groups += membership
-                added++
+                if (!entry.data.flag("preventRecursion", "prevent_recursion") && !entry.data["recursion"].objectOrEmpty().flag("prevent_outgoing")) outgoingAdded = true
                 val previous = previousState
                 val duration = entry.data.num("sticky", default = entry.data["effect"].objectOrEmpty().num("sticky")).coerceAtLeast(0)
                 val cooldown = entry.data.num("cooldown", default = entry.data["effect"].objectOrEmpty().num("cooldown")).coerceAtLeast(0)
@@ -427,12 +432,16 @@ internal object WorldbookEngine {
             }
             recursiveText = active.values.filterNot { (e, _) -> e.data.flag("preventRecursion", "prevent_recursion") || e.data["recursion"].objectOrEmpty().flag("prevent_outgoing") }
                 .joinToString("\n") { it.second }
-            // 参考 23060-23315 只在递归步数上限为 0 时做深度扩大；本项目保留既有每轮扩大，
-            // 但扩大只作用于继承 scanDepth 的条目，显式值（含 0）不受影响。
-            if (active.size < minActivations && canExpandScan && scanExpansion < maxExtraDepth) { scanExpansion++; continue }
-            if (!recursion || (added == 0 && step >= lastDelayedStep)) break
-            step++
+            // 先处理新递归内容与延迟条目；仅无限递归模式才在这些轮次结束后扩大扫描。
+            if (recursion && (outgoingAdded || step < lastDelayedStep)) { step++; continue }
+            if (recursion && recursionLimit == 0 && active.size < minActivations && canExpandScan && scanExpansion < maxExtraDepth) {
+                scanExpansion++
+                step++
+                continue
+            }
+            break
         }
+        if (step >= roundLimit && recursion && recursionLimit == 0) diagnostics += "世界书递归达到安全轮数上限 $roundLimit。"
         val output = active.values.sortedWith(compareBy<Pair<WorldEntry, String>> { it.first.sourceRank }.thenBy { it.first.order })
         output.filter { it.first.position == "outlet" }.groupBy { it.first.outlet }.forEach { (name, chunks) ->
             macros.outlets[name] = chunks.joinToString("\n\n") { it.second }

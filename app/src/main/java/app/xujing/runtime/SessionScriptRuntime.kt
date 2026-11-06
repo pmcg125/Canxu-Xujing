@@ -35,7 +35,7 @@ object SessionHooks {
     private var scriptNames=linkedMapOf<String,String>()
     var buttons by mutableStateOf(emptyList<SessionScriptButton>())
         private set
-    fun sync(state: AppState, session: ChatSession) { if(sessionId==session.id) synchronize?.invoke(state,session) }
+    fun sync(state: AppState, session: ChatSession) { if(sessionId==session.id) synchronize?.invoke(state,session); CardRuntimeHost.sync(state,session) }
     fun cancel(id: String?) { if(id!=null && sessionId==id) cancelEvents?.invoke() }
     fun runButton(id: String, scriptId: String, name: String) {
         if(sessionId==id && buttons.any { it.sessionId==id && it.scriptId==scriptId && it.name==name && it.enabled }) buttonDispatcher?.invoke(id,scriptId,name)
@@ -71,18 +71,7 @@ object SessionHooks {
     }
 }
 
-/**
- * Render evidence for message lifecycle events.
- *
- * UI code calls [rendered] only when a message is really mounted (Compose composition for user/plain
- * messages, card WebView `ready` after the runtime finished rendering). [expect] registers the event
- * before the message can be composed, so the render callback never misses it.
- *
- * The generation path calls [announce] right after the committed reply, because PiuPiu dispatches
- * message_received -> character_message_rendered -> message_updated -> generation_ended in that order.
- * [announce] records the same (message, content) signature so a later real render does not repeat it;
- * a render that was never announced (opening message, offscreen-until-scrolled card) still dispatches.
- */
+/** Render evidence is buffered until the saved message's sent/received event has completed. */
 object MessageRenders {
     private data class Pending(
         val sessionId: String,
@@ -90,85 +79,141 @@ object MessageRenders {
         val index: Int,
         val event: String,
         val type: String?,
-        val contentHash: Int,
+        val content: String,
+        val swipeIndex: Int,
+        val updateAfterRender: Boolean,
+        var armed: Boolean = false,
+        var dispatching: Boolean = false,
+        var job: Job? = null,
+        var segments: Set<Int>? = null,
+        val readySegments: MutableSet<Int> = mutableSetOf(),
+        val ready: CompletableDeferred<Unit> = CompletableDeferred(),
         val done: CompletableDeferred<Unit> = CompletableDeferred(),
     )
     private val pending = linkedMapOf<String, Pending>()
-    private val dispatched = linkedMapOf<String, String>()
-    /** Resolves the live index so events do not depend on an index captured before a commit. */
+    private val openings = linkedMapOf<String, Pair<String, Int>>()
+    var eventScope: CoroutineScope? = null
+    var synchronize: ((String) -> Unit)? = null
+    var revisionOf: ((String, String) -> Pair<String, Int>?)? = null
+    /** Returns -1 for deleted messages and sessions which are no longer open. */
     var indexOf: ((String, String) -> Int)? = null
     private fun key(sessionId: String, messageId: String) = sessionId + "\u0000" + messageId
-    private fun signature(contentHash: Int, event: String) = event + ":" + contentHash
 
-    /** Register the expected first render of a message. Call before the state change that mounts it. */
+    /** Register before publishing content; arm only after its sent/received notification. */
     @Synchronized
-    fun expect(sessionId: String, messageId: String, index: Int, event: String, type: String?, contentHash: Int): CompletableDeferred<Unit> {
+    fun expect(sessionId: String, messageId: String, index: Int, event: String, type: String?, content: String, swipeIndex: Int, updateAfterRender: Boolean = false): CompletableDeferred<Unit> {
         if (messageId.isBlank()) return CompletableDeferred<Unit>().apply { complete(Unit) }
-        val entry = Pending(sessionId, messageId, index, event, type, contentHash)
-        pending[key(sessionId, messageId)] = entry
+        val id=key(sessionId,messageId)
+        if(type=="first_message" && openings[id]==(content to swipeIndex)) return CompletableDeferred<Unit>().apply { complete(Unit) }
+        pending.remove(id)?.let { it.job?.cancel(); it.ready.cancel(); it.done.cancel() }
+        val entry = Pending(sessionId, messageId, index, event, type, content, swipeIndex, updateAfterRender)
+        pending[id] = entry
         return entry.done
     }
 
     fun cancel(done: CompletableDeferred<Unit>) {
-        synchronized(this) { pending.entries.removeAll { it.value.done === done } }
+        synchronized(this) {
+            pending.values.firstOrNull { it.done === done }?.let { it.job?.cancel(); it.ready.cancel() }
+            pending.entries.removeAll { it.value.done === done }
+        }
         done.cancel()
     }
 
-    /** Bounded wait used only to keep message_sent -> user_message_rendered -> generation_started in order. */
+    fun arm(done: CompletableDeferred<Unit>) {
+        val entry=synchronized(this) {
+            pending.values.firstOrNull { it.done === done }?.also { it.armed=true }
+        } ?: return
+        dispatchIfReady(entry)
+    }
+
+    /** Offscreen messages never block generation indefinitely or pretend to have rendered. */
     suspend fun await(done: CompletableDeferred<Unit>, timeoutMs: Long = 1_500) {
-        withTimeoutOrNull(timeoutMs) { done.await() }
+        val entry=synchronized(this) { pending.values.firstOrNull { it.done === done } }
+        if(entry==null) return
+        try {
+            val ready=withTimeoutOrNull(timeoutMs) { entry.ready.await(); true } ?: false
+            // Once rendering happened, wait for dispatch; don't leave late updates running after a timeout.
+            if(ready && (indexOf?.invoke(entry.sessionId,entry.messageId) ?: -1)>=0) {
+                val completed=withTimeoutOrNull(30_000) { done.await(); true } ?: false
+                if(!completed) {
+                    cancel(done)
+                    android.util.Log.w("XujingRuntime","消息渲染事件等待超时：${entry.messageId}")
+                }
+            }
+        } catch(e:CancellationException) { if(!currentCoroutineContext().isActive) throw e }
     }
 
     fun forget(sessionId: String, messageId: String) {
         synchronized(this) {
-            pending.remove(key(sessionId, messageId))?.done?.cancel()
-            dispatched.remove(key(sessionId, messageId))
+            pending.remove(key(sessionId, messageId))?.let { it.job?.cancel(); it.ready.cancel(); it.done.cancel() }
+            openings.remove(key(sessionId, messageId))
         }
     }
 
     fun clear(sessionId: String) {
         synchronized(this) {
             val prefix = sessionId + "\u0000"
-            pending.values.filter { it.sessionId == sessionId }.forEach { it.done.cancel() }
+            pending.values.filter { it.sessionId == sessionId }.forEach { it.job?.cancel(); it.ready.cancel(); it.done.cancel() }
             pending.entries.removeAll { it.value.sessionId == sessionId }
-            dispatched.keys.removeAll { it.startsWith(prefix) }
+            openings.keys.removeAll { it.startsWith(prefix) }
         }
     }
 
-    private suspend fun send(entry: Pending, excludeToken: String?) {
-        val index = indexOf?.invoke(entry.sessionId, entry.messageId)?.takeIf { it >= 0 } ?: entry.index
-        val payload = if (entry.event == "character_message_rendered")
-            JsonArray(listOf(JsonPrimitive(index), JsonPrimitive(entry.type ?: "normal")))
-        else JsonArray(listOf(JsonPrimitive(index)))
-        try { SessionHooks.emit(entry.sessionId, entry.event, payload, excludeToken) }
-        catch (e: CancellationException) { throw e }
-        catch (e: Exception) { /* A render notification must never break composition or generation. */ }
-    }
-
-    /** Real render evidence. Dispatches only for the matching content and only once per (message, event, content). */
-    suspend fun rendered(sessionId: String, messageId: String, contentHash: Int, excludeToken: String? = null) {
-        val entry = synchronized(this) {
-            val entry = pending[key(sessionId, messageId)] ?: return
-            // A slower earlier page must not consume the expectation of newer content.
-            if (entry.contentHash != contentHash) return
-            pending.remove(key(sessionId, messageId))
-            val sig = signature(contentHash, entry.event)
-            if (dispatched[key(sessionId, messageId)] == sig) { entry.done.complete(Unit); return }
-            dispatched[key(sessionId, messageId)] = sig
-            entry
-        }
-        try { send(entry, excludeToken) } finally { entry.done.complete(Unit) }
-    }
-
-    /** Commit-time dispatch for the generation path; supersedes any pending render expectation for the message. */
-    suspend fun announce(sessionId: String, messageId: String, index: Int, event: String, type: String?, contentHash: Int) {
-        val retired = synchronized(this) {
-            val retired = pending.remove(key(sessionId, messageId))
-            dispatched[key(sessionId, messageId)] = signature(contentHash, event)
+    fun close() {
+        val retired=synchronized(this) {
+            val retired=pending.values.toList()
+            pending.clear(); openings.clear(); indexOf=null; revisionOf=null; synchronize=null; eventScope=null
             retired
         }
-        retired?.done?.complete(Unit)
-        send(Pending(sessionId, messageId, index, event, type, contentHash), null)
+        retired.forEach { it.job?.cancel(); it.ready.cancel(); it.done.cancel() }
+    }
+
+    private fun dispatchIfReady(entry: Pending) {
+        val scope=eventScope ?: return
+        synchronized(this) {
+            if(pending[key(entry.sessionId,entry.messageId)] !== entry || !entry.armed || !entry.ready.isCompleted || entry.dispatching) return
+            if((indexOf?.invoke(entry.sessionId,entry.messageId) ?: -1)<0) return
+            entry.dispatching=true
+        }
+        // The lifetime belongs to the controller, not a Compose effect which can be disposed mid-event.
+        entry.job=scope.launch {
+            try {
+                val index=indexOf?.invoke(entry.sessionId,entry.messageId) ?: -1
+                if(index<0 || revisionOf?.invoke(entry.sessionId,entry.messageId)!=(entry.content to entry.swipeIndex)) return@launch
+                synchronize?.invoke(entry.sessionId)
+                val payload=if(entry.event=="character_message_rendered") JsonArray(listOf(JsonPrimitive(index),JsonPrimitive(entry.type ?: "normal")))
+                    else JsonArray(listOf(JsonPrimitive(index)))
+                SessionHooks.emit(entry.sessionId,entry.event,payload)
+                if(entry.updateAfterRender) {
+                    val liveIndex=indexOf?.invoke(entry.sessionId,entry.messageId) ?: -1
+                    val stillExpected=synchronized(this@MessageRenders) { pending[key(entry.sessionId,entry.messageId)] === entry }
+                    currentCoroutineContext().ensureActive()
+                    if(liveIndex>=0 && stillExpected && revisionOf?.invoke(entry.sessionId,entry.messageId)==(entry.content to entry.swipeIndex)) {
+                        synchronize?.invoke(entry.sessionId)
+                        SessionHooks.emit(entry.sessionId,"message_updated",JsonArray(listOf(JsonPrimitive(liveIndex))))
+                    }
+                }
+                if(entry.type=="first_message") synchronized(this@MessageRenders) { openings[key(entry.sessionId,entry.messageId)]=entry.content to entry.swipeIndex }
+            } catch(e:CancellationException) { throw e }
+            catch(e:Exception) { /* Notifications must not break rendering or a saved generation. */ }
+            finally {
+                synchronized(this@MessageRenders) { if(pending[key(entry.sessionId,entry.messageId)] === entry) pending.remove(key(entry.sessionId,entry.messageId)) }
+                entry.done.complete(Unit)
+            }
+        }
+    }
+
+    /** A mixed message is ready only after all of its HTML segments have reported the exact candidate. */
+    fun rendered(sessionId: String, messageId: String, content: String, swipeIndex: Int, segments: Set<Int> = emptySet(), segmentIndex: Int? = null) {
+        val entry = synchronized(this) {
+            val entry = pending[key(sessionId, messageId)] ?: return
+            if (entry.content != content || entry.swipeIndex != swipeIndex) return
+            if(entry.segments!=segments) { entry.segments=segments; entry.readySegments.clear() }
+            if(segmentIndex!=null) entry.readySegments.add(segmentIndex)
+            if(segments.isEmpty() || entry.readySegments.containsAll(segments)) entry.ready.complete(Unit)
+            entry
+        }
+        dispatchIfReady(entry)
     }
 }
 
@@ -294,7 +339,6 @@ private class SessionScriptEngine(context: Context, private val id: String) {
         SessionHooks.configureScripts(id,scripts)
         SessionHooks.cancelEvents={
             requests.values.toList().forEach { it.cancel() }; requests.clear()
-            if(!closed) view.evaluateJavascript("window.__xujingDispatchSessionEvent('cancel-'+Date.now(),'generation_stopped',[],'')",null)
         }
         SessionHooks.buttonDispatcher={ buttonSession,scriptId,name ->
             if(buttonSession==id && !closed && ready.isCompleted) {

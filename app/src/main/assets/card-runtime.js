@@ -377,9 +377,15 @@
   window.eventEmitAndWait=window.eventEmit;
   window.__xujingSessionEvent=async(id,name,payload)=>{
     const multiple=Array.isArray(payload),args=multiple?payload:[payload];
-    // PiuPiu passes generate_after_data as { prompt, dryRun }; keep prompt as a live alias of messages.
-    if(name==='generate_after_data'&&args[0]&&typeof args[0]==='object'&&args[0].messages&&!Object.prototype.hasOwnProperty.call(args[0],'prompt'))
-      Object.defineProperty(args[0],'prompt',{enumerable:true,configurable:true,get:()=>args[0].messages,set:value=>{args[0].messages=value;}});
+    // JSON transport turns accessors into ordinary properties. Rebuild the alias in every
+    // receiving WebView; when both fields are present, messages is the canonical value.
+    if(name==='generate_after_data'&&args[0]&&typeof args[0]==='object') {
+      const data=args[0],has=key=>Object.prototype.hasOwnProperty.call(data,key);
+      if(has('messages')||has('prompt')) {
+        if(!has('messages')) data.messages=data.prompt;
+        Object.defineProperty(data,'prompt',{enumerable:true,configurable:true,get:()=>data.messages,set:value=>{data.messages=value;}});
+      }
+    }
     window.__xujingHostEventDepth++;
     try {
       await eventEmit(name,...args);
@@ -443,7 +449,7 @@
   window.__xujingCardReady=async()=>{
     resize();
     try { await window.eventEmit('message_iframe_render_ended',api.getCurrentMessageId()); }
-    finally { if(typeof XujingBridge.ready==='function') XujingBridge.ready(); }
+    finally { if(typeof XujingBridge.ready==='function') XujingBridge.ready(context.runtimeToken || ''); }
   };
   document.addEventListener('DOMContentLoaded', () => { new ResizeObserver(resize).observe(document.body); resize(); });
   window.addEventListener?.('pagehide',()=>{ for(const task of pending.values()){clearTimeout(task.timer);task.reject(Error('角色卡已关闭'));} pending.clear();events.clear(); });

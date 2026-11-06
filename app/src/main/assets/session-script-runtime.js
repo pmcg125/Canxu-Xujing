@@ -103,14 +103,18 @@
   window.__xujingSessionEvent = async (event, payload) => {
     const multiple = Array.isArray(payload);
     const args = multiple ? payload : [payload];
-    // PiuPiu passes generate_after_data as { prompt, dryRun }; keep prompt as a live alias of messages.
-    if (event === 'generate_after_data' && args[0] && typeof args[0] === 'object' && args[0].messages
-      && !Object.prototype.hasOwnProperty.call(args[0], 'prompt')) {
-      Object.defineProperty(args[0], 'prompt', {
-        enumerable: true, configurable: true,
-        get: () => args[0].messages,
-        set: value => { args[0].messages = value; },
-      });
+    // JSON transport turns accessors into ordinary properties. Rebuild the alias for every
+    // receiver; when both fields are present, messages is the canonical value.
+    if (event === 'generate_after_data' && args[0] && typeof args[0] === 'object') {
+      const data = args[0], has = key => Object.prototype.hasOwnProperty.call(data, key);
+      if (has('messages') || has('prompt')) {
+        if (!has('messages')) data.messages = data.prompt;
+        Object.defineProperty(data, 'prompt', {
+          enumerable: true, configurable: true,
+          get: () => data.messages,
+          set: value => { data.messages = value; },
+        });
+      }
     }
     window.__xujingHostEventDepth += 1;
     try {

@@ -22,12 +22,27 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
+private fun cardSnapshot(state:AppState, session:ChatSession, message:ChatMessage, endpointToken:String):String = buildJsonObject {
+    put("sessionId",session.id); put("messageId",message.id); put("runtimeToken",endpointToken); put("variables",session.variables)
+    put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
+    put("initRevision",(session.extra["xujing_init_revision"] as? JsonPrimitive)?.intOrNull ?: 0)
+    put("characterId",message.speakerId ?: session.roleIds.firstOrNull().orEmpty())
+    put("worldbookNames",JsonArray(CardLibrary.names(state,session.id).map(::JsonPrimitive)))
+    put("presets",JsonArray(CardLibrary.presets(state).map { buildJsonObject { put("id",it.id); put("name",it.name); put("enabled",it.enabled); put("revision",it.data.hashCode()) } }))
+    put("activePresetId",session.presetId?.let(::JsonPrimitive) ?: JsonNull)
+    put("chat",AppJson.encodeToJsonElement(session.messages.mapIndexed { index,m -> buildJsonObject {
+        put("message_id",index); put("id",m.id); put("role",m.role); put("name",m.name.orEmpty()); put("message",m.content); put("content",m.content); put("is_user",m.role=="user"); put("extra",m.extra)
+        put("variables",CandidateSnapshots.variablesFor(m)); put("swipe_id",m.swipeIndex)
+    } })); put("name1",session.userName); put("name2",message.name.orEmpty())
+}.toString().replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
+
 object CardRuntimeHost {
     private data class Endpoint(
         val sessionId:String,
         val token:String,
         val messageIndex:Int,
         val segmentIndex:Int,
+        val synchronize:(AppState,ChatSession)->Unit,
         val dispatch:suspend (String,JsonElement)->JsonElement,
     )
     var handler:((sessionId:String,runtimeToken:String,method:String,payload:String,reply:(String)->Unit)->Unit)?=null
@@ -41,8 +56,8 @@ object CardRuntimeHost {
         trustedTokens[sessionId]?.let { tokens -> tokens.remove(token); if(tokens.isEmpty()) trustedTokens.remove(sessionId) }
     }
     @Synchronized fun isTrusted(sessionId:String,token:String)=token.isNotBlank() && token in trustedTokens[sessionId].orEmpty()
-    @Synchronized fun register(sessionId:String,token:String,messageIndex:Int,segmentIndex:Int,dispatch:suspend (String,JsonElement)->JsonElement) {
-        endpoints[key(sessionId,token)]=Endpoint(sessionId,token,messageIndex,segmentIndex,dispatch)
+    @Synchronized fun register(sessionId:String,token:String,messageIndex:Int,segmentIndex:Int,synchronize:(AppState,ChatSession)->Unit,dispatch:suspend (String,JsonElement)->JsonElement) {
+        endpoints[key(sessionId,token)]=Endpoint(sessionId,token,messageIndex,segmentIndex,synchronize,dispatch)
         trust(sessionId,token)
     }
     @Synchronized fun unregister(sessionId:String,token:String) {
@@ -52,6 +67,9 @@ object CardRuntimeHost {
     @Synchronized private fun snapshot(sessionId:String,excludeToken:String?):List<Endpoint> =
         endpoints.values.filter { it.sessionId==sessionId && it.token!=excludeToken }
             .sortedWith(compareBy<Endpoint> { it.messageIndex }.thenBy { it.segmentIndex })
+    fun sync(state:AppState,session:ChatSession) {
+        snapshot(session.id,null).forEach { it.synchronize(state,session) }
+    }
     suspend fun emit(sessionId:String,event:String,payload:JsonElement,excludeToken:String?=null):JsonElement {
         var current=payload
         for(endpoint in snapshot(sessionId,excludeToken)) {
@@ -67,7 +85,7 @@ object CardRuntimeHost {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:AppState,allowScripts:Boolean,onVariables:(JsonObject)->Unit,onSend:(String)->Unit,documentMode:Boolean=false,runtimeToken:String="",segmentIndex:Int=0) {
+fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:AppState,allowScripts:Boolean,onVariables:(JsonObject)->Unit,onSend:(String)->Unit,documentMode:Boolean=false,runtimeToken:String="",segmentIndex:Int=0,renderSegments:Set<Int> = setOf(segmentIndex)) {
     var height by remember(message.id) { mutableIntStateOf(180) }
     val currentSession by rememberUpdatedState(session)
     val scriptsAllowed by rememberUpdatedState(allowScripts)
@@ -76,25 +94,13 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
     var webView by remember { mutableStateOf<WebView?>(null) }
     val main=remember { Handler(Looper.getMainLooper()) }
     val body=content
-    val endpointToken=runtimeToken.ifBlank { message.id+":"+message.swipeIndex+":"+body.hashCode() }
+    val endpointToken=remember(runtimeToken,body,message.swipeIndex) { runtimeToken.ifBlank { message.id+":"+message.swipeIndex }+":"+java.util.UUID.randomUUID() }
     val messageIndex=session.messages.indexOfFirst { it.id==message.id }
     val pageReady=remember { mutableStateOf(false) }
-    val renderedContentHash=remember { mutableIntStateOf(message.content.hashCode()) }
+    val renderedRevision=remember { mutableStateOf(message.content to message.swipeIndex) }
     val eventPending=remember { mutableMapOf<String,kotlinx.coroutines.CompletableDeferred<JsonElement>>() }
     val eventSequence=remember { java.util.concurrent.atomic.AtomicLong() }
-    val snapshot=buildJsonObject {
-        put("sessionId",session.id); put("messageId",message.id); put("runtimeToken",endpointToken); put("variables",session.variables)
-        put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
-        put("initRevision",(session.extra["xujing_init_revision"] as? JsonPrimitive)?.intOrNull ?: 0)
-        put("characterId",message.speakerId ?: session.roleIds.firstOrNull().orEmpty())
-        put("worldbookNames",JsonArray(CardLibrary.names(state,session.id).map(::JsonPrimitive)))
-        put("presets",JsonArray(CardLibrary.presets(state).map { buildJsonObject { put("id",it.id); put("name",it.name); put("enabled",it.enabled); put("revision",it.data.hashCode()) } }))
-        put("activePresetId",session.presetId?.let(::JsonPrimitive) ?: JsonNull)
-        put("chat",AppJson.encodeToJsonElement(session.messages.mapIndexed { index,m -> buildJsonObject {
-            put("message_id",index); put("id",m.id); put("role",m.role); put("name",m.name.orEmpty()); put("message",m.content); put("content",m.content); put("is_user",m.role=="user"); put("extra",m.extra)
-            put("variables",CandidateSnapshots.variablesFor(m)); put("swipe_id",m.swipeIndex)
-        } })); put("name1",session.userName); put("name2",message.name.orEmpty())
-    }.toString().replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
+    val snapshot=cardSnapshot(state,session,message,endpointToken)
     val currentSnapshot by rememberUpdatedState(snapshot)
     AndroidView(modifier=Modifier.fillMaxWidth().height(height.dp),factory={ context ->
         WebView(context).apply {
@@ -137,7 +143,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
                         else runCatching { AppJson.parseToJsonElement(result) }.fold(task::complete,task::completeExceptionally)
                     }
                 }
-                @JavascriptInterface fun ready() { main.post { if(scriptsAllowed) pageReady.value=true } }
+                @JavascriptInterface fun ready(token:String) { main.post { if(scriptsAllowed && token==endpointToken) pageReady.value=true } }
             },"XujingBridge")
             webViewClient=object:WebViewClient() {
                 override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean=request.isForMainFrame
@@ -174,14 +180,18 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
                 override fun onPageFinished(view:WebView,url:String?) {
                     if(scriptsAllowed) {
                         view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($currentSnapshot);",null)
-                    }
+                    } else pageReady.value=true
                 }
             }
         }
     },update={ view ->
         view.settings.javaScriptEnabled=allowScripts
         if(!allowScripts) CardRuntimeHost.unregister(session.id,endpointToken)
-        else CardRuntimeHost.register(session.id,endpointToken,messageIndex,segmentIndex) { event,payload ->
+        else CardRuntimeHost.register(session.id,endpointToken,messageIndex,segmentIndex,synchronize={ latestState,latestSession ->
+            val latestMessage=latestSession.messages.firstOrNull { it.id==message.id } ?: message
+            val latestSnapshot=cardSnapshot(latestState,latestSession,latestMessage,endpointToken)
+            main.post { webView?.let { target -> if(pageReady.value && target.isAttachedToWindow) runCatching { target.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($latestSnapshot);",null) } } }
+        }) { event,payload ->
             if(!pageReady.value) return@register payload
             val targetView=webView ?: return@register payload
             if(!targetView.isAttachedToWindow) return@register payload
@@ -200,7 +210,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
         if(view.tag!=key) {
             view.tag=key
             pageReady.value=false
-            renderedContentHash.intValue=message.content.hashCode()
+            renderedRevision.value=message.content to message.swipeIndex
             val runtime=view.context.assets.open("card-runtime.js").bufferedReader().use { it.readText() }
             val script=if(allowScripts) "<script>window.__XUJING_CONTEXT__=$snapshot;</script><script src=\"/runtime/zod.js\"></script><script src=\"/runtime/ejs.js\"></script><script>$runtime</script><script src=\"/runtime/mvu.js\"></script><script src=\"/runtime/template.js\"></script>" else ""
             val encodedBody=JsonPrimitive(body).toString().replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
@@ -212,13 +222,17 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
             }
             val page=if(documentMode && !allowScripts) body else "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0;max-width:100%;overflow-wrap:anywhere}img,video,canvas{max-width:100%}</style>$script</head><body>$rendered</body></html>"
             view.loadDataWithBaseURL("https://cards.xujing.invalid/",page,"text/html","UTF-8",null)
-        } else if(allowScripts) view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($snapshot);",null)
+        } else {
+            if(allowScripts) view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($snapshot);",null)
+            if(pageReady.value) renderedRevision.value=message.content to message.swipeIndex
+        }
     })
-    // Real render evidence for character_message_rendered: the card runtime calls ready() only after
-    // the card HTML and its scripts reached the end of a render pass. Multiple HTML segments of one
-    // message share the message signature, so only the first ready segment reports the message.
-    LaunchedEffect(allowScripts, pageReady.value, renderedContentHash.intValue) {
-        if(allowScripts && pageReady.value) MessageRenders.rendered(session.id, message.id, renderedContentHash.intValue, endpointToken)
+    // Each segment acknowledges the loaded candidate; the tracker waits for the whole message.
+    LaunchedEffect(pageReady.value, renderedRevision.value, renderSegments) {
+        if(pageReady.value) {
+            withFrameNanos { }
+            MessageRenders.rendered(session.id, message.id, renderedRevision.value.first, renderedRevision.value.second, renderSegments, segmentIndex)
+        }
     }
     DisposableEffect(endpointToken) { onDispose { CardRuntimeHost.unregister(session.id,endpointToken); eventPending.values.forEach { it.cancel() }; eventPending.clear(); webView?.apply { stopLoading(); removeJavascriptInterface("XujingBridge"); destroy() }; webView=null } }
 }

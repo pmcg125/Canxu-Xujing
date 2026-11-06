@@ -197,7 +197,7 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
                     val previous = session.messages.getOrNull(index - 1)
                     val showTime = previous == null || message.createdAt - previous.createdAt >= 5 * 60 * 1000L
                     MessageItem(message, session, state, reading, fontSize, showName = members.size > 1, timeLabel = if (showTime) messageTime(message.createdAt) else null,
-                        streaming = runtime.generating && session.messages.lastOrNull()?.id == message.id,
+                        streaming = runtime.generating && runtime.streamingMessageId == message.id,
                         onEdit = { editing = message }, onDelete = { deleting = message }, onRewind = { rewinding = message },
                         canGenerate = !runtime.busy && !runtime.generating && message.role == "assistant" && session.messages.lastOrNull()?.id == message.id,
                         canEdit = !runtime.busy && !runtime.generating,
@@ -347,8 +347,12 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
     // User bubbles and plain Markdown replies never touch a WebView; composition is their render evidence.
     // HTML messages instead report from CardMessage after the card runtime finished rendering.
     val cardMessage = segments.any { it is MessageSegment.Html }
+    val htmlSegments = segments.indices.filter { segments[it] is MessageSegment.Html }.toSet()
     LaunchedEffect(message.id, message.content, message.swipeIndex, streaming, cardMessage) {
-        if(!streaming && !cardMessage) MessageRenders.rendered(session.id, message.id, message.content.hashCode())
+        if(!streaming && !cardMessage) {
+            withFrameNanos { }
+            MessageRenders.rendered(session.id, message.id, message.content, message.swipeIndex)
+        }
     }
     val role = state.roles.firstOrNull { it.id == message.speakerId }
     val name = message.name ?: if (user) session.userName else role?.name ?: "角色"
@@ -401,13 +405,14 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
                                         SelectionContainer { Text(segment.source.trimEnd(), fontFamily = FontFamily.Monospace, fontSize = (fontSize * .9f).sp, lineHeight = (fontSize * 1.4f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     }
                                 }
-                                is MessageSegment.Html -> CardMessage(
+                                is MessageSegment.Html -> key(message.id, message.swipeIndex, segmentIndex, segment.source) { CardMessage(
                                     content = segment.source, documentMode = segment.document,
                                     segmentIndex = segmentIndex,
+                                    renderSegments = htmlSegments,
                                     runtimeToken = "${message.id}:${message.swipeIndex}:$segmentIndex:${segment.source.hashCode()}",
                                     session = session, message = message, state = state, allowScripts = state.preferences.allowCardScripts,
                                     onVariables = onVariables, onSend = onSend
-                                )
+                                ) }
                             }
                         }
                         if (message.swipes.size > 1) Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
