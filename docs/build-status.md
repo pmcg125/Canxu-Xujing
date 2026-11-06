@@ -97,3 +97,13 @@
 - M1-05：`SessionSettings.kt` 新增「世界书高级设置」折叠区，写入 `session.extra.worldInfo`，只合并用户实际修改的键，保留未知字段；支持恢复继承/默认和输入校验。
 - 验证：`:app:compileDebugKotlin -Offline` 与 `:app:assembleDebug -Offline` 通过，产出各架构 debug APK。**未运行测试、未启动模拟器、未安装 APK**；事件顺序、渲染去重、世界书过滤/评分/深度、设置页保存与重启行为均待测试 Agent 验收。
 - 已知待确认：生成提交时 `character_message_rendered` 采用“提交后立即派发、真实渲染只去重”的混合方案；用户停止时 `generation_stopped` 仍主要经 `SessionHooks.cancel` 发给会话脚本；`swipe` 按 `regenerate` 映射；summary/impersonate 使用字面 trigger 值。
+
+## M1 源码复审与重新打包（2026-11-06）
+
+基线 `f7be95a`。复审记录见 `docs/m1-code-review-2026-11-06.md`，共修正 R01～R12，仍未运行测试或安装。
+
+- 世界书：每组保留全部 sticky、多组取并集、已处理候选不重复尝试；角色过滤只使用来源角色文件名/名称与本轮角色名，不再把内部 ID 当名称；`maxRecursionSteps=0` 按不限固定轮处理并设安全边界；`maxDepth` 正值按包含末端索引计算，最少激活扩扫顺序对齐参考。
+- 事件与渲染：发送入口增加 `pendingSend` 占位，覆盖 UI 与脚本，保存期间停止/切会话可取消；`message_received` 完成后才 arm 渲染期望，真实渲染后再发 `character_message_rendered` 和 `message_updated`；多段 HTML 需全部 ready；脚本关闭走页面完成回调；`prompt/messages` 在每个接收 WebView 重建别名；停止事件由最终清理统一派发。
+- 设置：显示四个兼容容器合并后的有效值；只清理用户编辑项的别名并写入目标容器，未编辑字段和其他容器保持原样；输入不再静默改写为其他数字。
+- 验证：`node --check` 两个 JS 通过；`:app:assembleDebug -Offline` 通过（1m40s）。`dist` 已用本次构建刷新，x86_64 APK SHA-256 为 `e6e3088dfdbce585f0f9460d4e6f7c84da54941b038355de7806dc9512d78252`，源码包为 `b9f8f0da4290c44df54749b6d53e2b86cb1f5db0af41cee4ba702bb944d254ee`。
+- 状态仍为“已实现未运行验收”。前节“提交后立即派发”的混合方案已被本次复审替换；离屏或未完成 HTML 最多等待 1.5 秒，`generation_ended` 可先结束，渲染事件等消息实际挂载后再发。
