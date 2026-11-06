@@ -36,13 +36,19 @@
   const scope = (option={}) => {
     const type=option.type || 'chat';
     if(type==='chat') return {type};
+    if(type==='global') return {type:'global'};
     // PiuPiu keeps one global preset bucket (no per-preset-name split).
     if(type==='preset') return {type:'preset'};
     if(type!=='message') throw Error('尚未实现的变量作用域：'+type);
     const message=scopedMessage(option); if(!message) throw Error('消息不存在');
     return {type,messageId:message.id,swipe_id:message.swipe_id};
   };
-  const getVariables = (option={}) => { const selected=scope(option); if(selected.type==='preset') return clone(context.presetVariables || {}); return clone(selected.type==='chat' ? context.variables || {} : context.chat.find(m=>m.id===selected.messageId)?.variables || {}); };
+  const getVariables = (option={}) => {
+    const selected=scope(option);
+    if(selected.type==='preset') return clone(context.presetVariables || {});
+    if(selected.type==='global') return clone(context.globalVariables || {});
+    return clone(selected.type==='chat' ? context.variables || {} : context.chat.find(m=>m.id===selected.messageId)?.variables || {});
+  };
   let variableWrites=0;
   const replaceVariables = async (variables, option={}) => {
     const selected=scope(option), expected=getVariables(option), next=clone(variables);
@@ -51,6 +57,7 @@
       const result=await request('replaceVariables',{variables:next,option:selected,expected});
       if(selected.type==='chat') context.variables=clone(result.value);
       else if(selected.type==='preset') context.presetVariables=clone(result.value);
+      else if(selected.type==='global') context.globalVariables=clone(result.value);
       else { const message=context.chat.find(m=>m.id===selected.messageId); if(message) message.variables=clone(result.value); }
       await eventEmit('mag_variable_update_ended',clone(result.value)).catch(console.error);
       return clone(result.value);
@@ -352,7 +359,25 @@
     getLastMessageId: () => (context.chat || []).length - 1,
     generate: options => request('generate', typeof options === 'string' ? { user_input: options } : options),
     generateRaw: options => request('generate', options),
-    triggerSlash: async command => { if (String(command).startsWith('/send ')) return request('send', { text: String(command).slice(6) }); throw new Error('暂不支持的斜杠命令'); },
+    triggerSlash: async command => {
+      const source = String(command == null ? '' : command);
+      const match = /^\s*\/([A-Za-z]+)(?:\s+([\s\S]*))?$/.exec(source);
+      const name = (match && match[1] ? match[1] : '').toLowerCase(), rest = match && match[2] != null ? match[2] : '';
+      if (name === 'send') return request('send', { text: rest });
+      if (name === 'setinput') {
+        // In the message frame the shell owns #send_textarea; filling it there also echoes the
+        // draft to the host input. Fall back to a direct host write when no shell is present.
+        try {
+          if (window.parent && window.parent !== window && typeof window.parent.triggerSlash === 'function') {
+            await window.parent.triggerSlash(source);
+            return true;
+          }
+        } catch (_) { /* fall through to the bridge */ }
+        const result = await request('setInput', { text: rest });
+        return result === false ? false : true;
+      }
+      throw new Error('暂不支持的斜杠命令：' + source);
+    },
     substituteParams: text => String(text).replace(/\{\{user\}\}/gi, context.name1 || '我').replace(/\{\{char\}\}/gi, context.name2 || '').replace(/\{\{getvar::([^}]+)\}\}/g, (_, key) => String(getPath(context.variables, key, ''))),
   };
   window.TavernHelper = api;

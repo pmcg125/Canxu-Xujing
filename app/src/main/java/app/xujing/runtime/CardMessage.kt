@@ -7,8 +7,11 @@ import android.os.Looper
 import android.webkit.*
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.xujing.core.*
@@ -22,9 +25,11 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
-private fun cardSnapshot(state:AppState, session:ChatSession, message:ChatMessage, endpointToken:String):String = buildJsonObject {
+private fun cardSnapshot(state:AppState, session:ChatSession, message:ChatMessage, endpointToken:String, theme:JsonObject=EmptyObject):String = buildJsonObject {
     put("sessionId",session.id); put("messageId",message.id); put("runtimeToken",endpointToken); put("variables",session.variables)
     put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
+    put("globalVariables",state.compatibility["globalVariables"] ?: EmptyObject)
+    put("theme",theme)
     put("initRevision",(session.extra["xujing_init_revision"] as? JsonPrimitive)?.intOrNull ?: 0)
     put("characterId",message.speakerId ?: session.roleIds.firstOrNull().orEmpty())
     put("worldbookNames",JsonArray(CardLibrary.names(state,session.id).map(::JsonPrimitive)))
@@ -83,6 +88,35 @@ object CardRuntimeHost {
     }
 }
 
+/** Colours and type scale the shell mirrors onto `.mes_text`, so card scripts can read them. */
+private fun cssColor(value:androidx.compose.ui.graphics.Color):String {
+    val argb=value.toArgb()
+    val r=android.graphics.Color.red(argb); val g=android.graphics.Color.green(argb); val b=android.graphics.Color.blue(argb)
+    val a=android.graphics.Color.alpha(argb)/255f
+    return "rgba($r, $g, $b, $a)"
+}
+
+/** JSON string literal that is safe inside an inline <script> block. */
+private fun jsLiteral(value:String):String = JsonPrimitive(value).toString()
+    .replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
+
+private const val SHELL_STYLE =
+    "html,body{margin:0;padding:0;background:transparent;overflow-wrap:anywhere}" +
+    ".mes_text{margin:0;padding:0;display:block;width:100%;max-width:100%;overflow-wrap:anywhere}" +
+    ".mes_text iframe{display:block;width:100%;min-height:24px;border:0;padding:0;margin:0;background:transparent;overflow:hidden;color:inherit;font:inherit}" +
+    "#send_textarea{position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;resize:none;pointer-events:none}"
+
+/**
+ * Outer page for a scripted card. The author HTML runs inside a same-origin frame, so preset
+ * scripts can reach `window.parent.document`, `window.parent.triggerSlash` and `frameElement`.
+ */
+private fun messageShellPage(snapshot:String,theme:JsonObject,frameDocument:String,shellRuntime:String):String =
+    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta charset=\"utf-8\"><style>"+SHELL_STYLE+"</style></head><body>"+
+    "<div class=\"mes_text\"><iframe id=\"xujing-message-frame\" title=\"角色卡消息\"></iframe></div>"+
+    "<textarea id=\"send_textarea\" aria-hidden=\"true\" tabindex=\"-1\"></textarea>"+
+    "<script>window.__XUJING_CONTEXT__="+snapshot+";window.__XUJING_THEME__="+theme+";window.__XUJING_MESSAGE_HTML__="+jsLiteral(frameDocument)+";</script>"+
+    "<script>"+shellRuntime+"</script></body></html>"
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:AppState,allowScripts:Boolean,onVariables:(JsonObject)->Unit,onSend:(String)->Unit,documentMode:Boolean=false,runtimeToken:String="",segmentIndex:Int=0,renderSegments:Set<Int> = setOf(segmentIndex)) {
@@ -100,7 +134,18 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
     val renderedRevision=remember { mutableStateOf(message.content to message.swipeIndex) }
     val eventPending=remember { mutableMapOf<String,kotlinx.coroutines.CompletableDeferred<JsonElement>>() }
     val eventSequence=remember { java.util.concurrent.atomic.AtomicLong() }
-    val snapshot=cardSnapshot(state,session,message,endpointToken)
+    val colors=MaterialTheme.colorScheme
+    val bodyFontSize=MaterialTheme.typography.bodyMedium.fontSize.value
+    val theme=remember(colors.onSurface,colors.surface,colors.onSurfaceVariant,colors.primary,bodyFontSize) { buildJsonObject {
+        put("textColor",cssColor(colors.onSurface))
+        put("backgroundColor",cssColor(colors.surface))
+        put("secondaryTextColor",cssColor(colors.onSurfaceVariant))
+        put("accentColor",cssColor(colors.primary))
+        put("fontSize",bodyFontSize)
+        put("dark",colors.surface.luminance()<0.5f)
+    } }
+    val currentTheme by rememberUpdatedState(theme)
+    val snapshot=cardSnapshot(state,session,message,endpointToken,theme)
     val currentSnapshot by rememberUpdatedState(snapshot)
     AndroidView(modifier=Modifier.fillMaxWidth().height(height.dp),factory={ context ->
         WebView(context).apply {
@@ -189,7 +234,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
         if(!allowScripts) CardRuntimeHost.unregister(session.id,endpointToken)
         else CardRuntimeHost.register(session.id,endpointToken,messageIndex,segmentIndex,synchronize={ latestState,latestSession ->
             val latestMessage=latestSession.messages.firstOrNull { it.id==message.id } ?: message
-            val latestSnapshot=cardSnapshot(latestState,latestSession,latestMessage,endpointToken)
+            val latestSnapshot=cardSnapshot(latestState,latestSession,latestMessage,endpointToken,currentTheme)
             main.post { webView?.let { target -> if(pageReady.value && target.isAttachedToWindow) runCatching { target.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($latestSnapshot);",null) } } }
         }) { event,payload ->
             if(!pageReady.value) return@register payload
@@ -212,6 +257,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
             pageReady.value=false
             renderedRevision.value=message.content to message.swipeIndex
             val runtime=view.context.assets.open("card-runtime.js").bufferedReader().use { it.readText() }
+            val shellRuntime=view.context.assets.open("message-shell.js").bufferedReader().use { it.readText() }
             val script=if(allowScripts) "<script>window.__XUJING_CONTEXT__=$snapshot;</script><script src=\"/runtime/zod.js\"></script><script src=\"/runtime/ejs.js\"></script><script>$runtime</script><script src=\"/runtime/mvu.js\"></script><script src=\"/runtime/template.js\"></script>" else ""
             val encodedBody=JsonPrimitive(body).toString().replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
             val rendered=when {
@@ -220,7 +266,15 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
                 allowScripts -> "<script>window.__xujingRenderCard($encodedBody).catch(e=>{document.body.textContent='角色卡执行失败：'+e.message;console.error(e);return window.__xujingCardReady();});</script>"
                 else -> body
             }
-            val page=if(documentMode && !allowScripts) body else "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0;max-width:100%;overflow-wrap:anywhere}img,video,canvas{max-width:100%}</style>$script</head><body>$rendered</body></html>"
+            val page=when {
+                documentMode && !allowScripts -> body
+                // A scripted card runs inside a same-origin frame of the shell page, so preset
+                // HTML/JS can reach window.parent.document and #send_textarea.
+                allowScripts -> messageShellPage(snapshot,theme,
+                    "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><base href=\"https://cards.xujing.invalid/\"><script>try{window.XujingBridge=parent.XujingBridge||window.XujingBridge}catch(e){}</script>$script<style>html,body{margin:0;padding:0;max-width:100%;overflow-wrap:anywhere;background:transparent;color:inherit}img,video,canvas{max-width:100%}</style></head><body>$rendered</body></html>",
+                    shellRuntime)
+                else -> "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0;max-width:100%;overflow-wrap:anywhere}img,video,canvas{max-width:100%}</style>$script</head><body>$rendered</body></html>"
+            }
             view.loadDataWithBaseURL("https://cards.xujing.invalid/",page,"text/html","UTF-8",null)
         } else {
             if(allowScripts) view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($snapshot);",null)

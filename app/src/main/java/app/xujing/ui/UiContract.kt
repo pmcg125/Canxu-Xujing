@@ -17,7 +17,7 @@ data class UiRuntime(
     val fetchingModels: Boolean = false, val modelOptions: List<String> = emptyList(),
     val modelOptionsConnectionId: String? = null, val modelFetchVersion: Int = 0,
     val openLibraryKind: String? = null, val scriptPanel: ScriptPanel? = null,
-    val streamingMessageId: String? = null,
+    val streamingMessageId: String? = null, val inputDraft: String? = null,
 )
 interface AppActions {
     fun openSession(id: String?)
@@ -55,4 +55,6 @@ interface AppActions {
     fun fetchModels(connection: ApiConnection, apiKey: String?)
     fun consumeOpenLibrary()
     fun clearScriptPanel()
+    /** Clear the draft a card script pushed into the chat input. */
+    fun consumeInputDraft()
 }

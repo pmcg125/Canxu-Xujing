@@ -93,6 +93,12 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     val backgroundImage=scene.image
     val backgroundBrush=if(palette.size>1) Brush.linearGradient(palette) else SolidColor(palette.first())
     var input by rememberSaveable(session.id) { mutableStateOf("") }
+    // Card scripts can push text into the composer (/setinput); apply each draft once.
+    LaunchedEffect(runtime.inputDraft) {
+        val draft = runtime.inputDraft ?: return@LaunchedEffect
+        input = draft
+        actions.consumeInputDraft()
+    }
     var target by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var deleting by remember { mutableStateOf<ChatMessage?>(null) }

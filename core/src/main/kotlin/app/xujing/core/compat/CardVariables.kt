@@ -20,6 +20,7 @@ object CardVariables {
         "chat" -> session.variables
         "message" -> CandidateSnapshots.variablesFor(message(session,option))
         "preset" -> state.compatibility["presetVariables"] as? JsonObject ?: EmptyObject
+        "global" -> state.compatibility["globalVariables"] as? JsonObject ?: EmptyObject
         else -> error("尚未实现的变量作用域：${option.text("type")}")
     }
     fun apply(state:AppState,sessionId:String,payload:JsonObject):CardLibrary.Result {
@@ -30,6 +31,7 @@ object CardVariables {
         val variables=payload["variables"] as? JsonObject ?: error("变量必须是对象")
         val type=option.text("type","chat")
         if(type=="preset") return CardLibrary.Result(state.copy(compatibility=JsonObject(state.compatibility+("presetVariables" to variables))),variables)
+        if(type=="global") return CardLibrary.Result(state.copy(compatibility=JsonObject(state.compatibility+("globalVariables" to variables))),variables)
         val updated=if(type=="message") {
             val target=message(session,option)
             require(option["swipe_id"]==null || option["swipe_id"]?.jsonPrimitive?.intOrNull==target.swipeIndex) { "候选已变化，请重试" }

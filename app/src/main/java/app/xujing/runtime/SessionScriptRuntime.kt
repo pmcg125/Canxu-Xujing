@@ -12,6 +12,7 @@ import app.xujing.core.compat.CardLibrary
 import app.xujing.core.compat.SessionScript
 import app.xujing.core.compat.SessionScripts
 import app.xujing.core.engine.CandidateSnapshots
+import app.xujing.ui.LiveOverlayState
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
@@ -220,14 +221,14 @@ object MessageRenders {
 @Composable
 fun SessionScriptRuntime(state: AppState, session: ChatSession) {
     if(!state.preferences.allowCardScripts || (session.extra["sessionScriptsEnabled"] as? JsonPrimitive)?.booleanOrNull!=true) {
-        SideEffect { SessionHooks.clearButtons(session.id) }
+        SideEffect { SessionHooks.clearButtons(session.id); LiveOverlayState.disable(session.id) }
         return
     }
     val presetData=state.library.firstOrNull { it.enabled && it.kind=="preset" && it.id==session.presetId }?.data
-    val scripts=remember(state.roles,session.roleIds,session.extra["disabledSessionScriptIds"],session.presetId,presetData) { SessionScripts.collect(state,session) }
-    if(scripts.isEmpty()) return
+    val scripts=remember(state.roles,session.roleIds,session.extra["disabledSessionScriptIds"],session.presetId,presetData,session.extra["liveOverlayEnabled"]) { SessionScripts.collect(state,session) }
+    if(scripts.isEmpty()) { SideEffect { LiveOverlayState.disable(session.id) }; return }
     val context=LocalContext.current
-    val engine=remember(context,session.id,scripts) { SessionScriptEngine(context,session.id) }
+    val engine=remember(context,session.id,scripts,session.extra["liveOverlayEnabled"]) { SessionScriptEngine(context,session.id) }
     DisposableEffect(engine) {
         engine.start(state,session,scripts)
         onDispose { engine.close() }
@@ -248,6 +249,8 @@ private class SessionScriptEngine(context: Context, private val id: String) {
     private var sequence=0L
     private var closed=false
     private var snapshot=EmptyObject
+    /** Script handed to the visible live overlay instead of the hidden iframe runtime. */
+    private var liveScriptId: String?=null
 
     private fun snapshot(state: AppState, session: ChatSession)=buildJsonObject {
         put("sessionId",session.id); put("variables",session.variables)
@@ -258,6 +261,7 @@ private class SessionScriptEngine(context: Context, private val id: String) {
         put("presets",JsonArray(CardLibrary.presets(state).map { buildJsonObject { put("id",it.id); put("name",it.name); put("enabled",it.enabled); put("revision",it.data.hashCode()) } }))
         put("activePresetId",session.presetId?.let(::JsonPrimitive) ?: JsonNull)
         put("presetVariables",state.compatibility["presetVariables"] ?: EmptyObject)
+        put("globalVariables",state.compatibility["globalVariables"] ?: EmptyObject)
         put("chat",JsonArray(session.messages.mapIndexed { index,message -> buildJsonObject {
             put("message_id",index); put("id",message.id); put("role",message.role)
             put("name",message.name.orEmpty()); put("message",message.content); put("content",message.content)
@@ -269,7 +273,17 @@ private class SessionScriptEngine(context: Context, private val id: String) {
 
     fun start(state: AppState, session: ChatSession, scripts: List<SessionScript>) {
         snapshot=snapshot(state,session)
-        expectedScripts.clear(); expectedScripts.addAll(scripts.map { it.id })
+        // Spike switch: only the first script goes live, everything else keeps the hidden runtime.
+        // The flag lives in session.extra so sessions without it behave exactly as before.
+        val liveEnabled=(session.extra["liveOverlayEnabled"] as? JsonPrimitive)?.booleanOrNull==true
+        // Prefer a preset script (that is where orb/panel UI usually lives), then fall back to the
+        // first session script. Only that one goes live; the rest stay on the hidden runtime.
+        val live=if(liveEnabled) (scripts.firstOrNull { it.id.startsWith("preset:") } ?: scripts.firstOrNull()) else null
+        val hidden=if(live==null) scripts else scripts.filterNot { it.id==live.id }
+        liveScriptId=live?.id
+        if(live==null) LiveOverlayState.disable(id)
+        else LiveOverlayState.open(id,live.id,live.name,live.content,live.buttons,snapshot,scripts.size-1)
+        expectedScripts.clear(); expectedScripts.addAll(hidden.map { it.id })
         initializedScripts.clear()
         scripts.forEach { CardRuntimeHost.trust(id,it.id) }
         CardRuntimeHost.trust(id,panelToken)
@@ -329,7 +343,12 @@ private class SessionScriptEngine(context: Context, private val id: String) {
             }
             override fun onPageFinished(view: WebView, url: String?) {
                 if(closed || ready.isCompleted) return
-                val sources=JsonArray(scripts.map { script -> buildJsonObject {
+                if(expectedScripts.isEmpty()) {
+                    // The live overlay owns the only script; no hidden iframe will ever report in.
+                    ready.complete(Unit)
+                    return
+                }
+                val sources=JsonArray(hidden.map { script -> buildJsonObject {
                     put("id",script.id); put("name",script.name); put("info",script.info); put("content",script.content); put("buttons",script.buttons)
                 } })
                 view.evaluateJavascript("window.__xujingLoadSessionScripts(${safe(snapshot)},${safe(sources)});",null)
@@ -341,11 +360,15 @@ private class SessionScriptEngine(context: Context, private val id: String) {
             requests.values.toList().forEach { it.cancel() }; requests.clear()
         }
         SessionHooks.buttonDispatcher={ buttonSession,scriptId,name ->
-            if(buttonSession==id && !closed && ready.isCompleted) {
-                view.evaluateJavascript("window.__xujingRunButton("+JsonPrimitive(scriptId)+","+JsonPrimitive(name)+")",null)
+            if(buttonSession==id && !closed) {
+                // Live scripts expose their buttons from the overlay WebView, not the hidden iframe.
+                if(scriptId==liveScriptId) LiveOverlayState.runButton(id,scriptId,name)
+                else if(ready.isCompleted) view.evaluateJavascript("window.__xujingRunButton("+JsonPrimitive(scriptId)+","+JsonPrimitive(name)+")",null)
             }
         }
         SessionHooks.dispatcher={ event,payload,excludeToken ->
+            // Fan out to the live script first; the union of script results is not merged (spike).
+            LiveOverlayState.dispatchEvent(id,event,payload,excludeToken)
             try { withTimeout(30_000) { ready.await() } }
             catch(e:TimeoutCancellationException) { throw IllegalStateException("角色独立脚本加载超时，请检查网络依赖或关闭对应脚本",e) }
             try { withTimeout(15_000) {
@@ -365,14 +388,19 @@ private class SessionScriptEngine(context: Context, private val id: String) {
     private fun contextAssets(name: String)=view.context.assets.open(name).bufferedReader().use { it.readText() }
     fun update(state: AppState, session: ChatSession) {
         snapshot=snapshot(state,session)
-        if(!closed) view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate(${safe(snapshot)})",null)
+        if(!closed) {
+            view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate(${safe(snapshot)})",null)
+            LiveOverlayState.updateSnapshot(id,snapshot)
+        }
     }
     fun close() {
         closed=true
         ready.cancel(); requests.values.toList().forEach { it.cancel() }; requests.clear()
         CardRuntimeHost.untrust(id,panelToken)
         expectedScripts.forEach { CardRuntimeHost.untrust(id,it) }
+        liveScriptId?.let { CardRuntimeHost.untrust(id,it) }
         expectedScripts.clear(); initializedScripts.clear()
+        LiveOverlayState.dismiss(id)
         if(SessionHooks.owner===this) { SessionHooks.dispatcher=null; SessionHooks.synchronize=null; SessionHooks.cancelEvents=null; SessionHooks.clearButtons(id); SessionHooks.owner=null; SessionHooks.sessionId=null }
         view.evaluateJavascript("window.dispatchEvent(new Event('pagehide'))",null)
         view.stopLoading(); view.removeJavascriptInterface("XujingBridge"); view.destroy()

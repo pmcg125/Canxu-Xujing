@@ -29,7 +29,10 @@ async function main(){
   assert.equal(failed.variables.score,1);assert.ok(failed.error);
   await assert.rejects(()=>w.EjsTemplate.evaluate('<%= missing.value %>'),/missing/);
   assert.equal((await w.EjsTemplate.render('@@if false\nhidden')).content,'');
-  assert.throws(()=>w.getVariables({type:'global'}),/作用域/);
+  assert.throws(()=>w.getVariables({type:'extension'}),/作用域/);
+  assert.equal(JSON.stringify(w.getVariables({type:'global'})),'{}');
+  await w.replaceVariables({scopeProbe:1},{type:'global'});
+  assert.equal(w.getVariables({type:'global'}).scopeProbe,1);
   assert.equal(w.Mvu.getCurrentMvuData().stat_data.hp,1);
   const data={stat_data:{hp:[2,'health']}};
   assert.equal(await w.Mvu.setMvuVariable(data,'hp',3),true);

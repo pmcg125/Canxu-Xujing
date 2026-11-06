@@ -81,6 +81,9 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
                     }
                 }
             }
+            SettingSwitch("预设 live 悬浮层（实验）","让使用 parent.document 的预设脚本在可见覆盖层中运行；仅对当前会话生效，默认关闭。",(draft.extra["liveOverlayEnabled"] as? JsonPrimitive)?.booleanOrNull==true) {
+                draft=draft.copy(extra=JsonObject(draft.extra+("liveOverlayEnabled" to JsonPrimitive(it))))
+            }
             ChoiceField("提示词预设",draft.presetId,state.library.filter { it.kind=="preset" && it.enabled }.map { it.id to it.name },"使用默认编排") { draft=draft.copy(presetId=it) }
             SettingSwitch("使用预设采样参数","启用后，预设中的温度、top_p、惩罚、输出上限等有效参数会覆盖聊天连接参数；摘要仍使用摘要连接参数。",(draft.extra["applyPresetSampling"] as? JsonPrimitive)?.booleanOrNull==true) {
                 draft=draft.copy(extra=JsonObject(draft.extra+("applyPresetSampling" to JsonPrimitive(it))))

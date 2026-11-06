@@ -704,6 +704,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     /** One-shot UI intent from the card runtime; the Compose shell consumes it. */
     override fun consumeOpenLibrary() { _runtime.update { it.copy(openLibraryKind=null) } }
     override fun clearScriptPanel() { _runtime.update { it.copy(scriptPanel=null) } }
+    override fun consumeInputDraft() { _runtime.update { if(it.inputDraft==null) it else it.copy(inputDraft=null) } }
     override fun clearPrompt() { _runtime.update { it.copy(promptPreview=null) } }
     override fun clearSuggestions() {
         suggestionVersion++
@@ -910,6 +911,12 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 },summary="",worldState=EmptyObject,extra=SummaryPlanner.clearCursor(current.extra)) }; JsonPrimitive(true)
             }
             "send", "sendMessage" -> { require(runtime.value.activeSessionId==s.id) { "请打开此会话后发送" }; require(!runtime.value.generating) { "生成事件结束前暂不能发送下一条消息" }; JsonPrimitive(sendCommitted(obj.text("text",obj.text("message")),null)) }
+            // Fills the chat input without sending; allowed while a reply is streaming.
+            "setInput" -> {
+                require(runtime.value.activeSessionId==s.id) { "请打开此会话后填写输入框" }
+                _runtime.update { it.copy(inputDraft=obj.text("text")) }
+                JsonPrimitive(true)
+            }
             "generate" -> {
                 val input=obj.text("user_input",obj.text("prompt"))
                 val build=PromptEngine.build(state.value,s.copy(messages=if(input.isBlank()) s.messages else s.messages+ChatMessage(content=input)))
