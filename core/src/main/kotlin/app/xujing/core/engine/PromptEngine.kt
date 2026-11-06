@@ -41,7 +41,7 @@ object PromptEngine {
         val macros = MacroProcessor(state, macroSession, selected, initial, diagnostics, random)
         val regex = RegexProcessor(state, session, roles, macros, diagnostics)
         val contextTokens = connection?.contextTokens?.coerceAtLeast(256) ?: 16384
-        val world = WorldbookEngine.activate(state, macroSession, roles, macros, contextTokens, random)
+        val world = WorldbookEngine.activate(state, macroSession, roles, macros, contextTokens, random, mode, selected)
         diagnostics += world.diagnostics
         fun worldText(position: String) = regex.apply(world.at(position), TextStage.WORLDINFO)
         val persona = session.persona.ifBlank {
