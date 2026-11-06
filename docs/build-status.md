@@ -117,3 +117,12 @@
 - 未测：`prompt/messages` 别名（`QA Prompt Alias` 未跑完）、停止/编辑/切换会话/失败事件分支、M1-01/02/03 的模拟 API 实收内容、恢复继承/默认。
 - 环境：强制停止 DocumentsUI 后出现一次 ANR，日志原因为 `Input dispatching timed out (Application does not have a focused window)`，不是主线程阻塞；重启应用后恢复。主机内存紧张，收尾时 MEmu VM 退出。
 - 构建：`ScriptPanel.kt` 修复后 `:app:assembleDebug -Offline` 通过；当前 x86_64 APK SHA-256 为 `107a95b71d5eff04218d846ef809bce34c9b12fc81e5564214f912c88b2aac91`。`dist` 已刷新，测试新增的源码/文档会在提交后重新打包。
+
+## 消息 iframe 与 live overlay（2026-11-07）
+
+- 消息宿主：脚本开启时 `CardMessage` 改为 shell + 同源 iframe；作者 HTML 内的 `window.parent.document` 现在能访问 `.mes_text`、隐藏的 `#send_textarea`，`triggerSlash('/setinput ...')` 会把文本写入 Compose 输入框；`frameElement.style.height` 通过 shell 高度同步。
+- 变量：`card-runtime.js` 与 `CardVariables.kt` 增加 `global` 作用域，读写 `state.compatibility["globalVariables"]`；卡片和会话脚本 snapshot 均带 `globalVariables`。
+- App 级 live overlay（实验）：会话设置新增「预设 live 悬浮层（实验）」开关，写入 `session.extra["liveOverlayEnabled"]`。开启后优先把当前会话的预设脚本放到可见覆盖层 WebView，脚本的 `parent.document` 指向 overlay shell，fixed 节点可显示、拖动、点击；宿主按节点并集裁剪 WebView，并保留关闭按钮。当前只让一个脚本 live，其余仍走隐藏运行时。
+- 验收（逍遥 Android 12，x86_64）：消息 shell 自动填充和点击按钮两条路径均得到 `SHELL_INPUT_OK`，无 `ERR` 文本；live overlay 显示 `LIVE OVERLAY OK`，可关闭，返回重进会话后自动重建；logcat 无 `FATAL EXCEPTION` / `XujingLive` / `live overlay script failed`。
+- 构建：arm64 交付包 `4d0b3203491311cf234764bdb0a34e5a3e3eb0283f5923ba131ebe1b952d90e7`；本轮测试用 x86_64 包 `8b13917392d401524890e6f0686dc92c7c77136dfea0f3460ed91b6d17238a9e`，位于 `app/build/outputs/apk/debug/`。
+- 未完成：overlay 只支持一个 live 脚本；`parent.$`、完整 `.mes`/聊天 DOM、`scrollTop` 等仍未 shim；overlay 并集矩形之间的空白会覆盖聊天；`/send`、杀进程重启恢复、多个预设脚本未测。

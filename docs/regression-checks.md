@@ -50,3 +50,17 @@ $adb = 'D:\REA-Android\platform-tools\adb.exe'
 - 逍遥的文件选择器里点缩略图只会预览；要点文件名文本，才会把 URI 返回给残叙。
 - 首次安装后需要打开「设置 → 角色卡执行 → 允许角色卡脚本」，再在会话里开「运行角色独立脚本」。
 - 关闭实例：`& $memu stop -i 1`。
+
+## 消息 shell 与 live overlay（手动）
+
+脚本开启时，消息 HTML 运行在同源 iframe shell 中。可用合成角色验证：
+
+- `first_mes` 里调用 `parent.triggerSlash('/setinput SHELL_INPUT_OK')`，或提供按钮执行同样代码。
+- 进入会话后检查 Compose 输入框出现 `SHELL_INPUT_OK`；无 `ERR` 文本。
+
+预设 live 悬浮层：
+
+1. 准备一个预设脚本，在 `parent.document.documentElement.appendChild` 一个 `position:fixed` 的节点。
+2. 会话设置 → 提示词资料 → 选择该预设，打开「运行角色独立脚本」和「预设 live 悬浮层（实验）」。
+3. 返回会话，确认固定节点可见、可关闭；返回重进会话后能重建。
+4. 当前只让一个脚本 live，其余脚本仍走隐藏运行时；`parent.$`、完整聊天 DOM 等未 shim。

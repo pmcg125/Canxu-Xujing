@@ -86,6 +86,13 @@ $adb = 'D:\REA-Android\platform-tools\adb.exe'
 
 1. 设置 → 角色卡执行 → 打开「允许角色卡脚本」
 2. 会话设置 → 提示词资料 → 打开「运行角色独立脚本」
+3. 需要预设 `parent.document` 悬浮层时，再打开「预设 live 悬浮层（实验）」
+
+主机约 5.9 GB 内存时，MEmu 虚拟机内存设为 **2048 MB**；4096 可能因 Windows 提交内存不足报 `VERR_UNRESOLVED_ERROR` / 1455。调整命令：
+
+```powershell
+& 'D:\Program Files\Microvirt\MEmu\memuc.exe' setconfigex -i 1 memory 2048
+```
 
 ### 备用：Android Studio AVD
 
