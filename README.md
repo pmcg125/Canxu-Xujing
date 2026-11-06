@@ -56,11 +56,16 @@ Set-Location D:\Canxu-project\Xujing
 | Gradle 缓存 | `D:\Roleplay\tooling\gradle-cache` |
 | 本地依赖仓库 | `D:\Roleplay\tooling\maven-cache` |
 | Android 用户目录 / 临时文件 | `D:\Roleplay\tooling\android-user` / `D:\Roleplay\tooling\tmp` |
+| adb | `D:\REA-Android\platform-tools\adb.exe` |
+| 默认测试机 | 逍遥 Android 12（`MEmu_1`，`127.0.0.1:21513`，x86_64） |
+| 备用测试机 | AVD `Xujing_Android13`（`emulator-5554`） |
 | Android Gradle Plugin | 8.13.2 |
 | Kotlin / Compose compiler | 2.1.20 |
 | compileSdk / targetSdk / minSdk | 36 / 36 / 26 |
 
 输出目录：`app\build\outputs\apk\debug`，包括按 CPU 架构拆分的 APK 和 `app-universal-debug.apk` 通用包。多数近年 Android 手机可使用 `app-arm64-v8a-debug.apk`。首次构建需要下载依赖。`build.ps1` 只构建指定任务，不安装应用或运行测试。
+
+完整的环境路径、内存限制、模拟器启动/连接方式和常见坑见 [开发与测试环境](docs/environment.md)。当前默认测试机为逍遥 Android 12（`127.0.0.1:21513`）；构建与模拟器不要同时运行，Gradle 输出请重定向到文件而不是接管道。
 
 依照用户下载偏好，Gradle 优先使用阿里云 Google / Central / Gradle 插件镜像，官方仓库保留在后面；模型下载优先使用 hf-mirror.com。显式下载工具使用 `tools/Download-Resumable.ps1`，保留 `.part` 文件并以 HTTP Range 续传，完成后核对已知校验值。Gradle 自带下载使用缓存，不能据此保证跨进程断点续传；较大文件中断时可用此脚本接管。
 

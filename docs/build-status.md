@@ -79,3 +79,11 @@
 - 对照原版 `Ls`、`Hs`、`Ps`、`Ns` 和 JSON Patch 转换，增加部分 `lodash` / `replace` / `move`、数组路径及按键或索引增删、带说明数值对和 JSON 更新命令。嵌套块、部分 scope、日期运算、原版完整 schema/事件链及逐操作提交语义仍未完整覆盖。
 - 测试代理执行 `:core:regressionChecks -Offline`：20 条源代码推导的命令样例、6 条 JSON Patch、非法操作/作用域、未闭合注释与 9 条非法 path/from 检查通过。样例按静态代码构造，不是调用原版运行时的自动差分。
 - Android 13 模拟器中使用独立 8766 模拟接口与合成会话，验证模型回复中的 JSON 更新及 JSON Patch、候选重生成与切换、强制停止和重启后状态恢复。最终 APK 覆盖安装后再次检查候选和发出的变量；角色卡脚本保持关闭。`assembleDebug -Offline` 通过。
+
+## 测试机切换与悬浮面板（2026-11-06）
+
+- 测试机默认改为逍遥 Android 12（`MEmu_1`，adb `127.0.0.1:21513`，x86_64，Chrome WebView 104，720×1280）；原 Android 13 AVD 保留为备用。完整流程见 `docs/environment.md` 与 `docs/regression-checks.md`。
+- 悬浮面板层端到端通过：`setScriptPanel` 显式面板、`parent.document` 兼容面板、标题栏拖动、宿主关闭按钮、`clearScriptPanel()` 均验证成功。
+- 预设检查卡回读 `shape=true|true|true`、`saved=undefined`、`replaceExisting=false`、`set=true|object`、`pvars`、`hasCap=true` 全部符合预期。
+- `:core:regressionChecks` 七组、Node 两组测试、APK 资源与 dist 哈希检查均通过。构建期间主机内存不足一次（Gradle native OOM）；停 Gradle/Kotlin 守护进程并关闭模拟器后重试成功。
+- 逍遥首次安装需手动打开「允许角色卡脚本」和会话级「运行角色独立脚本」；文件选择器必须点文件名而不是缩略图。测试资料与合成会话保留在模拟器中。
