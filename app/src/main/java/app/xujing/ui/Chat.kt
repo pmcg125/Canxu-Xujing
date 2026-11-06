@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.xujing.core.*
 import app.xujing.runtime.CardMessage
+import app.xujing.runtime.MessageRenders
 import app.xujing.runtime.SessionHooks
 import app.xujing.core.engine.PromptEngine
 import kotlinx.serialization.json.*
@@ -341,6 +342,14 @@ private fun highlightMatches(text:String, query:String, background:Color):Annota
 @Composable
 private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppState, reading: Boolean, fontSize: Float, showName: Boolean, timeLabel: String?, streaming: Boolean, onEdit: () -> Unit, onDelete: () -> Unit, onRewind: () -> Unit, canGenerate: Boolean, canEdit: Boolean, onContinue: () -> Unit, onRegenerate: () -> Unit, onSwipe: (Int) -> Unit, onVariables: (JsonObject) -> Unit, onSend: (String) -> Unit) {
     val user = message.role == "user"
+    val displayed = remember(message.content, message.extra, session.variables, session.regexIds, state.library, state.roles) { PromptEngine.displayText(message.content, state, session, message.role, processed = message.extra["xujing_processed_output"]?.jsonPrimitive?.booleanOrNull == true) }
+    val segments = remember(displayed, streaming) { MessageContentParser.parse(displayed, allowHtml = !streaming) }
+    // User bubbles and plain Markdown replies never touch a WebView; composition is their render evidence.
+    // HTML messages instead report from CardMessage after the card runtime finished rendering.
+    val cardMessage = segments.any { it is MessageSegment.Html }
+    LaunchedEffect(message.id, message.content, message.swipeIndex, streaming, cardMessage) {
+        if(!streaming && !cardMessage) MessageRenders.rendered(session.id, message.id, message.content.hashCode())
+    }
     val role = state.roles.firstOrNull { it.id == message.speakerId }
     val name = message.name ?: if (user) session.userName else role?.name ?: "角色"
     var menu by remember { mutableStateOf(false) }
@@ -378,8 +387,6 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
                     shape = if (reading || square) RoundedCornerShape(0.dp) else if (user) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp),
                     modifier = if (reading) Modifier.fillMaxWidth() else Modifier.widthIn(max = 620.dp).fillMaxWidth(if (user) .78f else .84f)) {
                     Column(Modifier.padding(horizontal = if (reading) 0.dp else 14.dp, vertical = if (reading) 4.dp else 10.dp)) {
-                        val displayed = remember(message.content, message.extra, session.variables, session.regexIds, state.library, state.roles) { PromptEngine.displayText(message.content, state, session, message.role, processed = message.extra["xujing_processed_output"]?.jsonPrimitive?.booleanOrNull == true) }
-                        val segments = remember(displayed, streaming) { MessageContentParser.parse(displayed, allowHtml = !streaming) }
                         val dark = (if (reading) MaterialTheme.colorScheme.background else color).luminance() < 0.5f
                         val quoteColor = if (dark) Color(0xFFFF9F43) else Color(0xFFA34B00)
                         val bracketColor = if (dark) Color(0xFF75B8FF) else Color(0xFF005EAD)

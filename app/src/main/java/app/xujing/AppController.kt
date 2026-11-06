@@ -14,6 +14,7 @@ import app.xujing.core.engine.GenerationSettings
 import app.xujing.core.engine.SummaryPlanner
 import app.xujing.data.*
 import app.xujing.runtime.CardRuntimeHost
+import app.xujing.runtime.MessageRenders
 import app.xujing.runtime.SessionHooks
 import app.xujing.ui.*
 import kotlinx.coroutines.*
@@ -67,6 +68,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 reply(cardRequest(sessionId,method,payload,runtimeToken).toString())
             } catch(e:Exception) { reply(buildJsonObject { put("error",e.message ?: "卡片请求失败") }.toString()) } }
         }
+        MessageRenders.indexOf={ sessionId,messageId -> state.value.sessions.firstOrNull { it.id==sessionId }?.messages?.indexOfFirst { it.id==messageId } ?: -1 }
     }
     private fun initialState():AppState {
         val role=RoleCard(name="雾港档案员",description="林遥是雾港档案馆的年轻档案员，记忆细致，善于从旧物发现线索。",personality="温和、谨慎、好奇；有自己的判断，会记得对方的承诺。",scenario="你在雨夜带着一封没有寄件人的旧信来到雾港档案馆。",firstMessage="雨水沿着窗棂落下。林遥从一摞旧档案后抬起头，目光停在你手中的信封上。\n\n“这枚邮戳……已经停用了二十年。”她把台灯移近了一些，“你在哪里找到它的？”")
@@ -80,6 +82,43 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     private suspend fun persist():Boolean {
         if(!storageReady) return false
         return try { withContext(Dispatchers.IO) { saveMutex.withLock { store.save(_state.value) } }; true } catch(e:Exception) { error(e); false }
+    }
+    /**
+     * Apply [block] to one session and wait for the snapshot to reach disk.
+     * Returns true only when the state was committed, so message lifecycle events are never
+     * dispatched for a change the user could lose on restart.
+     */
+    private suspend fun commitSession(id:String,block:(ChatSession)->ChatSession):Boolean = withContext(NonCancellable) {
+        if(!storageReady) return@withContext false
+        saveMutex.withLock {
+            var staged=false
+            try {
+                repeat(16) {
+                    val before=_state.value
+                    val next=before.copy(sessions=before.sessions.map { if(it.id==id) block(it).copy(updatedAt=System.currentTimeMillis()) else it })
+                    withContext(Dispatchers.IO) { store.save(next) }
+                    staged=true
+                    if(_state.compareAndSet(before,next)) return@withLock true
+                }
+                error("保存时资料持续变化，请重试")
+            } catch(e:Exception) {
+                if(staged) try { withContext(Dispatchers.IO) { store.save(_state.value) } } catch(recovery:Exception) { e.addSuppressed(recovery) }
+                _runtime.update { it.copy(error="保存会话失败：${e.message ?: "未知错误"}") }
+                false
+            }
+        }
+    }
+    /** Message lifecycle events are advisory; a failing script must not turn a saved change into a failure. */
+    private suspend fun emitMessageEvent(sessionId:String,event:String,payload:JsonElement) {
+        try { SessionHooks.emit(sessionId,event,payload) }
+        catch(e:CancellationException) { throw e }
+        catch(e:Exception) { _runtime.update { it.copy(status="脚本事件处理失败：${e.message}") } }
+    }
+    private fun expectOpeningRender(session:ChatSession) {
+        val index=session.messages.indexOfFirst { (it.extra["isOpening"] as? JsonPrimitive)?.booleanOrNull==true }
+        if(index<0) return
+        val opening=session.messages[index]
+        MessageRenders.expect(session.id,opening.id,index,"character_message_rendered","first_message",opening.content.hashCode())
     }
     /** Save a script mutation before reporting success; retry if other UI state changed. */
     private suspend fun commitCardLibrary(sessionId:String,method:String,payload:JsonObject):JsonObject = withContext(NonCancellable) {
@@ -257,6 +296,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         if(id==null) { _runtime.update { it.copy(activeSessionId=null) }; return }
         val snapshot=state.value.sessions.firstOrNull { it.id==id } ?: return
         if(runtime.value.generating || !PromptEngine.needsMvuReplay(snapshot) || !PromptEngine.hasMvuState(state.value,snapshot)) {
+            expectOpeningRender(snapshot)
             _runtime.update { it.copy(activeSessionId=id) }
             replayInBackground(id)
             return
@@ -275,6 +315,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                     )
                 }
             } else if(current!=null) replayInBackground(id)
+            expectOpeningRender(state.value.sessions.firstOrNull { it.id==id } ?: snapshot)
             _runtime.update { it.copy(activeSessionId=id,status="") }
         }
     }
@@ -312,7 +353,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             if(edited!=null && edited.variables!=message.variables) CandidateSnapshots.attach(message,edited.variables) else message
         }) }
     }
-    override fun deleteSession(id:String) { if(generatingSession==id) stop(); change { it.copy(sessions=it.sessions.filterNot { s -> s.id==id }) }; if(runtime.value.activeSessionId==id) openSession(null); viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(id) } }
+    override fun deleteSession(id:String) { if(generatingSession==id) stop(); MessageRenders.clear(id); change { it.copy(sessions=it.sessions.filterNot { s -> s.id==id }) }; if(runtime.value.activeSessionId==id) openSession(null); viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(id) } }
     override fun saveRole(role:RoleCard) { change { s -> s.copy(roles=if(s.roles.any { it.id==role.id }) s.roles.map { if(it.id==role.id) role else it } else s.roles+role) } }
     override fun deleteRole(id:String) {
         if(state.value.sessions.any { id in it.roleIds }) { error(IllegalArgumentException("这个角色仍被会话使用，请先删除关联会话或调整成员")); return }
@@ -332,9 +373,26 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     override fun saveEmbedding(settings:EmbeddingSettings) { change { it.copy(embedding=settings) } }
     override fun send(text:String,targetRoleId:String?) {
         if(text.isBlank() || runtime.value.generating) return
-        val s=active() ?: return
-        mutateSession(s.id) { it.copy(messages=it.messages+ChatMessage(role="user",content=text,name=it.userName,variables=it.variables)) }
+        viewModelScope.launch { sendCommitted(text,targetRoleId) }
+    }
+    /** Commit the user message and its lifecycle events; returns false when nothing was saved. */
+    private suspend fun sendCommitted(text:String,targetRoleId:String?):Boolean {
+        if(text.isBlank() || runtime.value.generating) return false
+        val s=active() ?: return false
+        // Register render evidence before the state change so composition cannot outrun it.
+        val message=ChatMessage(role="user",content=text,name=s.userName,variables=s.variables)
+        val rendered=MessageRenders.expect(s.id,message.id,s.messages.size,"user_message_rendered",null,message.content.hashCode())
+        if(runtime.value.generating) { MessageRenders.cancel(rendered); return false }
+        if(!commitSession(s.id) { it.copy(messages=it.messages+message) }) { MessageRenders.cancel(rendered); return false }
+        val committed=state.value.sessions.firstOrNull { it.id==s.id }
+        if(committed==null) { MessageRenders.cancel(rendered); return false }
+        SessionHooks.sync(state.value,committed)
+        val index=committed.messages.indexOfFirst { it.id==message.id }
+        if(index>=0) emitMessageEvent(s.id,"message_sent",JsonArray(listOf(JsonPrimitive(index))))
+        // user_message_rendered comes from the Compose composition; wait briefly so it stays before generation_started.
+        MessageRenders.await(rendered)
         generate(s.id,targetRoleId,"normal")
+        return true
     }
     override fun stop() { generation?.cancel(); SessionHooks.cancel(generatingSession); api.cancel() }
     override fun regenerate() { val s=active() ?: return; if(runtime.value.generating || s.messages.lastOrNull()?.role!="assistant") return; generate(s.id,s.messages.last().speakerId,"regenerate") }
@@ -363,7 +421,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             generatingSession=sessionId
             _runtime.update { it.copy(generating=true,status="正在编排提示词…") }
             var replyId:String?=null; var previous:ChatMessage?=null; var initial:ChatSession?=null
-            var raw=""; var successful=false
+            var raw=""; var successful=false; var started=false
             var streamEvents:Channel<Pair<String,JsonArray>>?=null
             var streamEventJob:Job?=null
             try {
@@ -394,11 +452,14 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 val composed=withContext(Dispatchers.Default) { PromptEngine.build(state.value,prepared,target.id,remembered,mode) }
                 var build=if(summaryWarning==null) composed else composed.copy(diagnostics=composed.diagnostics+summaryWarning)
                 SessionHooks.sync(state.value,prepared)
-                SessionHooks.emit(sessionId,"generation_started",JsonPrimitive(mode))
+                SessionHooks.emit(sessionId,"generation_started",JsonArray(listOf(JsonPrimitive(mode),EmptyObject,JsonPrimitive(false))))
+                started=true
                 val promptEvent=SessionHooks.emit(sessionId,"chat_completion_prompt_ready",buildJsonObject { put("chat",AppJson.encodeToJsonElement(build.messages)); put("dryRun",JsonPrimitive(false)) })
                 val chat=(promptEvent as? JsonObject)?.get("chat") as? JsonArray ?: error("提示词事件必须保留 chat 消息数组")
                 val dataEvent=SessionHooks.emit(sessionId,"generate_after_data",buildJsonObject { put("messages",chat); put("dryRun",JsonPrimitive(false)) })
-                val messages=(dataEvent as? JsonObject)?.get("messages") as? JsonArray ?: error("生成事件必须保留 messages 消息数组")
+                // PiuPiu reads messages first, then prompt; scripts may replace/rename either field.
+                val data=(dataEvent as? JsonObject)
+                val messages=(data?.get("messages") as? JsonArray) ?: (data?.get("prompt") as? JsonArray) ?: error("生成事件必须保留 messages 或 prompt 消息数组")
                 val outgoing=AppJson.decodeFromJsonElement<List<PromptMessage>>(messages)
                 require(outgoing.isNotEmpty() && outgoing.all { it.role in setOf("system","developer","user","assistant") }) { "脚本返回了无效的提示词消息" }
                 SessionHooks.emit(sessionId,"js_generation_started",JsonArray(listOf(JsonPrimitive(mode))))
@@ -480,42 +541,72 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                         val finalSession=state.value.sessions.firstOrNull { it.id==sessionId }
                         finalSession?.let { SessionHooks.sync(state.value,it) }
                         val finalIndex=finalSession?.messages?.indexOfFirst { it.id==replyId }?.takeIf { it>=0 } ?: (finalSession?.messages?.lastIndex ?: -1)
-                        val finalContent=finalSession?.messages?.firstOrNull { it.id==replyId }?.content ?: raw
-                        SessionHooks.emit(sessionId,"js_generation_ended",JsonArray(listOf(JsonPrimitive(finalContent),JsonPrimitive(mode))))
-                        if(successful) SessionHooks.emit(sessionId,"message_received",JsonArray(listOf(JsonPrimitive(finalIndex),JsonPrimitive(mode))))
-                        SessionHooks.emit(sessionId,"generation_ended",JsonArray(listOf(JsonPrimitive(finalIndex))))
+                        val finalMessage=finalSession?.messages?.getOrNull(finalIndex)
+                        val finalContent=finalMessage?.content ?: raw
+                        emitMessageEvent(sessionId,"js_generation_ended",JsonArray(listOf(JsonPrimitive(finalContent),JsonPrimitive(mode))))
+                        if(successful) {
+                            emitMessageEvent(sessionId,"message_received",JsonArray(listOf(JsonPrimitive(finalIndex),JsonPrimitive(mode))))
+                            // Commit-time dispatch keeps PiuPiu's order; the recorded (message, content) signature
+                            // stops the card/Compose render callback from emitting the same event again.
+                            if(finalMessage!=null && finalMessage.id==replyId) MessageRenders.announce(sessionId,finalMessage.id,finalIndex,"character_message_rendered",mode,finalMessage.content.hashCode())
+                            else emitMessageEvent(sessionId,"character_message_rendered",JsonArray(listOf(JsonPrimitive(finalIndex),JsonPrimitive(mode))))
+                            emitMessageEvent(sessionId,"message_updated",JsonArray(listOf(JsonPrimitive(finalIndex))))
+                            emitMessageEvent(sessionId,"generation_ended",JsonArray(listOf(JsonPrimitive(finalIndex))))
+                        } else {
+                            // Failure and stop never report a completed message.
+                            if(started) emitMessageEvent(sessionId,"generation_stopped",JsonArray(emptyList()))
+                        }
                     } catch(e:CancellationException) { throw e } catch(e:Exception) { error(e) }
                 } finally { _runtime.update { it.copy(generating=false) }; generatingSession=null }
             }
         }
     }
-    private fun historyChange(block:(ChatSession)->ChatSession) { if(runtime.value.generating) return; clearSuggestions(); active()?.let { s ->
-        mutateSession(s.id) {
-            val changed=block(it)
-            changed.copy(summary="",worldState=EmptyObject,extra=JsonObject(SummaryPlanner.clearCursor(changed.extra)+("xujing_replay_version" to JsonPrimitive(0))))
-        }
-        viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(s.id) }
-        replayInBackground(s.id)
-    } }
-    override fun editMessage(id:String,content:String) = historyChange { s ->
-        val original=s.messages.firstOrNull { it.id==id } ?: return@historyChange s
-        val processed=PromptEngine.processEdit(content,state.value,s,original)
-        val index=original.swipeIndex.coerceIn(0,(original.swipes.size-1).coerceAtLeast(0))
-        val swipes=if(original.swipes.isEmpty()) emptyList() else original.swipes.toMutableList().apply { this[index]=processed }
-        val extra=if(swipes.isEmpty()) JsonObject(original.extra-"xujing_swipe_sources"-"mvuRawSwipes"+mapOf("sourceText" to JsonPrimitive(content),"xujing_processed_output" to JsonPrimitive(true)))
-        else {
-            fun updateSources(key:String,defaults:List<String>):JsonArray {
-                val values=original.extra.array(key).mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toMutableList()
-                while(values.size<swipes.size) values.add(defaults.getOrElse(values.size) { "" })
-                if(values.size>swipes.size) values.subList(swipes.size,values.size).clear()
-                values[index]=content
-                return JsonArray(values.map(::JsonPrimitive))
+    /** Apply a history edit, then run [afterCommit] only when the new snapshot reached disk. */
+    private fun historyChange(afterCommit:(suspend (ChatSession)->Unit)?=null, block:(ChatSession)->ChatSession) {
+        if(runtime.value.generating) return
+        clearSuggestions()
+        val s=active() ?: return
+        viewModelScope.launch {
+            if(runtime.value.generating) return@launch
+            val saved=commitSession(s.id) {
+                val changed=block(it)
+                changed.copy(summary="",worldState=EmptyObject,extra=JsonObject(SummaryPlanner.clearCursor(changed.extra)+("xujing_replay_version" to JsonPrimitive(0))))
             }
-            val sources=updateSources("xujing_swipe_sources",original.swipes)
-            val raw=updateSources("mvuRawSwipes",original.swipes)
-            JsonObject(original.extra+mapOf("sourceText" to JsonPrimitive(content),"xujing_swipe_sources" to sources,"mvuRawSwipes" to raw,"xujing_processed_output" to JsonPrimitive(true)))
+            if(!saved) return@launch
+            val committed=state.value.sessions.firstOrNull { it.id==s.id } ?: return@launch
+            SessionHooks.sync(state.value,committed)
+            afterCommit?.invoke(committed)
+            withContext(Dispatchers.IO) { store.deleteVectors(s.id) }
+            replayInBackground(s.id)
         }
-        s.copy(messages=s.messages.map { m -> if(m.id!=id) m else m.copy(content=processed,swipes=swipes,extra=extra) })
+    }
+    override fun editMessage(id:String,content:String) = historyChange(afterCommit={ committed ->
+        val index=committed.messages.indexOfFirst { it.id==id }
+        if(index>=0) {
+            emitMessageEvent(committed.id,"message_edited",JsonArray(listOf(JsonPrimitive(index))))
+            emitMessageEvent(committed.id,"message_updated",JsonArray(listOf(JsonPrimitive(index))))
+        }
+    }) { s ->
+        val original=s.messages.firstOrNull { it.id==id }
+        if(original==null) s else {
+            val processed=PromptEngine.processEdit(content,state.value,s,original)
+            val index=original.swipeIndex.coerceIn(0,(original.swipes.size-1).coerceAtLeast(0))
+            val swipes=if(original.swipes.isEmpty()) emptyList() else original.swipes.toMutableList().apply { this[index]=processed }
+            val extra=if(swipes.isEmpty()) JsonObject(original.extra-"xujing_swipe_sources"-"mvuRawSwipes"+mapOf("sourceText" to JsonPrimitive(content),"xujing_processed_output" to JsonPrimitive(true)))
+            else {
+                fun updateSources(key:String,defaults:List<String>):JsonArray {
+                    val values=original.extra.array(key).mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toMutableList()
+                    while(values.size<swipes.size) values.add(defaults.getOrElse(values.size) { "" })
+                    if(values.size>swipes.size) values.subList(swipes.size,values.size).clear()
+                    values[index]=content
+                    return JsonArray(values.map(::JsonPrimitive))
+                }
+                val sources=updateSources("xujing_swipe_sources",original.swipes)
+                val raw=updateSources("mvuRawSwipes",original.swipes)
+                JsonObject(original.extra+mapOf("sourceText" to JsonPrimitive(content),"xujing_swipe_sources" to sources,"mvuRawSwipes" to raw,"xujing_processed_output" to JsonPrimitive(true)))
+            }
+            s.copy(messages=s.messages.map { m -> if(m.id!=id) m else m.copy(content=processed,swipes=swipes,extra=extra) })
+        }
     }
     override fun deleteMessage(id:String) = historyChange { s -> val messages=s.messages.filterNot { it.id==id }; s.copy(messages=messages,variables=messages.lastOrNull()?.let { CandidateSnapshots.variablesFor(it) } ?: EmptyObject) }
     override fun selectSwipe(id:String,index:Int) {
@@ -546,8 +637,19 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             if(current==null || runtime.value.generating || current.messages!=session.messages || current.variables!=session.variables) {
                 _runtime.update { it.copy(status="") }; return@launch
             }
-            mutateSession(session.id) { prepared.copy(updatedAt=it.updatedAt) }
-            viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(session.id) }
+            var applied=false
+            val saved=commitSession(session.id) { current ->
+                applied=current.messages==session.messages && current.variables==session.variables
+                if(applied) prepared.copy(updatedAt=current.updatedAt) else current
+            }
+            if(!saved || !applied) { _runtime.update { it.copy(status="") }; return@launch }
+            val committed=state.value.sessions.firstOrNull { it.id==session.id }
+            if(committed!=null) {
+                SessionHooks.sync(state.value,committed)
+                val index=committed.messages.indexOfFirst { m -> m.id==id }
+                if(index>=0) emitMessageEvent(session.id,"message_updated",JsonArray(listOf(JsonPrimitive(index))))
+            }
+            withContext(Dispatchers.IO) { store.deleteVectors(session.id) }
             _runtime.update { it.copy(status="") }
         }
     }
@@ -775,7 +877,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                     if(edit==null) m else m.copy(content=edit.text("message",edit.text("content",m.content)))
                 },summary="",worldState=EmptyObject,extra=SummaryPlanner.clearCursor(current.extra)) }; JsonPrimitive(true)
             }
-            "send", "sendMessage" -> { require(runtime.value.activeSessionId==s.id) { "请打开此会话后发送" }; require(!runtime.value.generating) { "生成事件结束前暂不能发送下一条消息" }; send(obj.text("text",obj.text("message"))); JsonPrimitive(true) }
+            "send", "sendMessage" -> { require(runtime.value.activeSessionId==s.id) { "请打开此会话后发送" }; require(!runtime.value.generating) { "生成事件结束前暂不能发送下一条消息" }; JsonPrimitive(sendCommitted(obj.text("text",obj.text("message")),null)) }
             "generate" -> {
                 val input=obj.text("user_input",obj.text("prompt"))
                 val build=PromptEngine.build(state.value,s.copy(messages=if(input.isBlank()) s.messages else s.messages+ChatMessage(content=input)))

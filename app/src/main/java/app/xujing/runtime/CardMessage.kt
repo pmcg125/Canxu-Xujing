@@ -79,6 +79,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
     val endpointToken=runtimeToken.ifBlank { message.id+":"+message.swipeIndex+":"+body.hashCode() }
     val messageIndex=session.messages.indexOfFirst { it.id==message.id }
     val pageReady=remember { mutableStateOf(false) }
+    val renderedContentHash=remember { mutableIntStateOf(message.content.hashCode()) }
     val eventPending=remember { mutableMapOf<String,kotlinx.coroutines.CompletableDeferred<JsonElement>>() }
     val eventSequence=remember { java.util.concurrent.atomic.AtomicLong() }
     val snapshot=buildJsonObject {
@@ -199,6 +200,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
         if(view.tag!=key) {
             view.tag=key
             pageReady.value=false
+            renderedContentHash.intValue=message.content.hashCode()
             val runtime=view.context.assets.open("card-runtime.js").bufferedReader().use { it.readText() }
             val script=if(allowScripts) "<script>window.__XUJING_CONTEXT__=$snapshot;</script><script src=\"/runtime/zod.js\"></script><script src=\"/runtime/ejs.js\"></script><script>$runtime</script><script src=\"/runtime/mvu.js\"></script><script src=\"/runtime/template.js\"></script>" else ""
             val encodedBody=JsonPrimitive(body).toString().replace("<","\\u003c").replace("\u2028","\\u2028").replace("\u2029","\\u2029")
@@ -212,5 +214,11 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
             view.loadDataWithBaseURL("https://cards.xujing.invalid/",page,"text/html","UTF-8",null)
         } else if(allowScripts) view.evaluateJavascript("window.__xujingUpdate&&window.__xujingUpdate($snapshot);",null)
     })
+    // Real render evidence for character_message_rendered: the card runtime calls ready() only after
+    // the card HTML and its scripts reached the end of a render pass. Multiple HTML segments of one
+    // message share the message signature, so only the first ready segment reports the message.
+    LaunchedEffect(allowScripts, pageReady.value, renderedContentHash.intValue) {
+        if(allowScripts && pageReady.value) MessageRenders.rendered(session.id, message.id, renderedContentHash.intValue, endpointToken)
+    }
     DisposableEffect(endpointToken) { onDispose { CardRuntimeHost.unregister(session.id,endpointToken); eventPending.values.forEach { it.cancel() }; eventPending.clear(); webView?.apply { stopLoading(); removeJavascriptInterface("XujingBridge"); destroy() }; webView=null } }
 }

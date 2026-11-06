@@ -388,7 +388,7 @@
       XujingBridge.eventComplete(id,'null',String(error?.message||error));
     } finally { window.__xujingHostEventDepth=Math.max(0,window.__xujingHostEventDepth-1); }
   };
-  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', CHAT_CHANGED:'chat_id_changed', GENERATION_STARTED:'generation_started', GENERATION_ENDED:'generation_ended', GENERATION_STOPPED:'generation_stopped', CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready', GENERATE_AFTER_DATA:'generate_after_data', PRESET_CHANGED:'preset_changed', PRESET_DELETED:'preset_deleted', PRESET_RENAMED:'preset_renamed', PRESET_RENAMED_BEFORE:'preset_renamed_before', OAI_PRESET_CHANGED_AFTER:'oai_preset_changed_after', OAI_PRESET_CHANGED_BEFORE:'oai_preset_changed_before'};
+  window.tavern_events={MESSAGE_UPDATED:'message_updated', MESSAGE_RECEIVED:'message_received', MESSAGE_SENT:'message_sent', MESSAGE_EDITED:'message_edited', CHARACTER_MESSAGE_RENDERED:'character_message_rendered', USER_MESSAGE_RENDERED:'user_message_rendered', CHAT_CHANGED:'chat_id_changed', GENERATION_STARTED:'generation_started', GENERATION_ENDED:'generation_ended', GENERATION_STOPPED:'generation_stopped', CHAT_COMPLETION_PROMPT_READY:'chat_completion_prompt_ready', GENERATE_AFTER_DATA:'generate_after_data', PRESET_CHANGED:'preset_changed', PRESET_DELETED:'preset_deleted', PRESET_RENAMED:'preset_renamed', PRESET_RENAMED_BEFORE:'preset_renamed_before', OAI_PRESET_CHANGED_AFTER:'oai_preset_changed_after', OAI_PRESET_CHANGED_BEFORE:'oai_preset_changed_before'};
   window.iframe_events=Object.freeze({
     MESSAGE_IFRAME_RENDER_STARTED:'message_iframe_render_started',
     MESSAGE_IFRAME_RENDER_ENDED:'message_iframe_render_ended',
