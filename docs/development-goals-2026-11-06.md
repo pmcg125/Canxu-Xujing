@@ -186,8 +186,14 @@
 
 | 任务 ID | 需求与参考 | 实现位置 | 验收案例与证据 | 状态 / 未完成项 |
 | --- | --- | --- | --- | --- |
-| M1-01～M1-05（逐项展开） | 待实施时填写 | 待填写 | 待执行，不预填 PASS | 待实施 |
-| M2～M5（按子任务展开） | 待实施时填写 | 待填写 | 待执行，不预填 PASS | 后续阶段 |
+| M1-01 世界书角色/生成模式过滤 | 参考 `index-legacy` 20739-20763；`PromptEngine.build` 传 mode | `WorldbookEngine.kt` `collect/activate`、`PromptEngine.kt` | 待测试 Agent 执行；需记录预期/实际激活 ID 与模拟 API 实收内容 | 已实现未验收；多角色、未知模式、过滤顺序待运行核对 |
+| M1-02 扫描深度继承 | 参考 `index-legacy` 21818-21879、22453-22482、23043-23070 | `WorldbookEngine.kt` `resolveBookScanDepth/scanDepthFor/maxExtraDepth` | 待执行；覆盖书级/全局/显式 0/非法值/minActivations 扩大 | 已实现未验收；书级与显式值的端到端证据未测 |
+| M1-03 互斥组关键词评分 | 参考 `index-legacy` 20764-20920 | `WorldbookEngine.kt` `groupScore` 与组选择 | 待执行；覆盖并列得分、sticky、override、权重随机 | 已实现未验收；随机源与多组场景未测 |
+| M1-04 消息生命周期事件 | 参考 `ChatView` 12098-12125、17785-17810、20402-20414、25680-25692、27490-27510 | `AppController.kt`、`CardMessage.kt`、`SessionScriptRuntime.kt`、`Chat.kt`、`card-runtime.js` | 待执行；记录发送/流式/续写/重生成/编辑/停止/失败/切换会话轨迹 | 已实现未验收；提交失败分支、渲染去重、停止事件范围未测 |
+| M1-05 世界书高级设置 | 参考 `ChatView` 14790-14840 | `SessionSettings.kt` | 待执行；修改→保存→离开→重进→重启，未知字段保留 | 已实现未验收；未在真机 Compose 操作 |
+| M2～M5 | 按后续阶段展开 | 待实施 | 待执行 | 后续阶段 |
+
+实现记录（2026-11-06）：M1-01～M1-05 已按上表位置落地，完成 `:app:compileDebugKotlin -Offline` 与 `:app:assembleDebug -Offline`，均通过。本次未运行测试、未启动模拟器、未安装 APK；状态一律为“已实现未验收”，不预填 PASS。测试 Agent 接手时按本文第 3 节和 `environment.md` 的逍遥 Android 12 流程执行，并把结果补进上表。
 
 状态区分：待实施、已实现未验收、PASS、FAIL、BLOCKED、NOT TESTED。样本通过率只对该样本集成立；达到既有数量、分类与关键问题要求后才能讨论 90% 目标，不能用接口数量或构建成功替代。
 

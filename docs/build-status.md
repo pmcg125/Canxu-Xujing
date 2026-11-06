@@ -87,3 +87,13 @@
 - 预设检查卡回读 `shape=true|true|true`、`saved=undefined`、`replaceExisting=false`、`set=true|object`、`pvars`、`hasCap=true` 全部符合预期。
 - `:core:regressionChecks` 七组、Node 两组测试、APK 资源与 dist 哈希检查均通过。构建期间主机内存不足一次（Gradle native OOM）；停 Gradle/Kotlin 守护进程并关闭模拟器后重试成功。
 - 逍遥首次安装需手动打开「允许角色卡脚本」和会话级「运行角色独立脚本」；文件选择器必须点文件名而不是缩略图。测试资料与合成会话保留在模拟器中。
+
+## M1 世界书与消息事件实现（2026-11-06）
+
+基线 `9cf3641`（计划文档提交）。本批按 `docs/development-goals-2026-11-06.md` 实现 M1-01～M1-05，状态均为“已实现未验收”。
+
+- M1-01/02/03：`WorldbookEngine.kt` 增加 `characterFilter`、`triggers`、条目→书级→会话全局的扫描深度继承（显式 0 合法）、`maxDepth` 扩大扫描、`useGroupScoring` 主/副关键词评分；`PromptEngine.build` 显式传入生成模式与回复角色。
+- M1-04：`AppController.kt` 增加可等待的 `commitSession`，发送/编辑/切候选只有在落库成功后才派发 `message_sent`、`message_edited`、`message_updated`；补齐 `generation_started(type, {}, false)`、`message_received`、`character_message_rendered`、`generation_stopped` 与 `generate_after_data` 的 `messages/prompt` 兼容取值。`MessageRenders` 负责渲染证据、去重和实时索引；`CardMessage.kt`、`Chat.kt` 在卡片 ready 或 Compose 组合完成后上报。
+- M1-05：`SessionSettings.kt` 新增「世界书高级设置」折叠区，写入 `session.extra.worldInfo`，只合并用户实际修改的键，保留未知字段；支持恢复继承/默认和输入校验。
+- 验证：`:app:compileDebugKotlin -Offline` 与 `:app:assembleDebug -Offline` 通过，产出各架构 debug APK。**未运行测试、未启动模拟器、未安装 APK**；事件顺序、渲染去重、世界书过滤/评分/深度、设置页保存与重启行为均待测试 Agent 验收。
+- 已知待确认：生成提交时 `character_message_rendered` 采用“提交后立即派发、真实渲染只去重”的混合方案；用户停止时 `generation_stopped` 仍主要经 `SessionHooks.cancel` 发给会话脚本；`swipe` 按 `regenerate` 映射；summary/impersonate 使用字面 trigger 值。
