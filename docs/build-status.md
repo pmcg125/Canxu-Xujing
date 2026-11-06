@@ -107,3 +107,13 @@
 - 设置：显示四个兼容容器合并后的有效值；只清理用户编辑项的别名并写入目标容器，未编辑字段和其他容器保持原样；输入不再静默改写为其他数字。
 - 验证：`node --check` 两个 JS 通过；`:app:assembleDebug -Offline` 通过（1m40s）。`dist` 已用本次构建刷新，x86_64 APK SHA-256 为 `e6e3088dfdbce585f0f9460d4e6f7c84da54941b038355de7806dc9512d78252`，源码包为 `b9f8f0da4290c44df54749b6d53e2b86cb1f5db0af41cee4ba702bb944d254ee`。
 - 状态仍为“已实现未运行验收”。前节“提交后立即派发”的混合方案已被本次复审替换；离屏或未完成 HTML 最多等待 1.5 秒，`generation_ended` 可先结束，渲染事件等消息实际挂载后再发。
+
+## M1 运行测试与面板修复（2026-11-06 晚）
+
+- 面板：逍遥 Android 12 上发现显式面板浅字浅底、兼容面板 `position:fixed;bottom:100px` 被推出小面板可视区。修复 `ScriptPanel.kt` 后复测：显式/兼容正文均可见，宿主关闭与 `clearScriptPanel()` 正常。
+- 核心：新增 `WorldbookM1Checks` 并接入 `:core:regressionChecks`，覆盖 characterFilter 名称/标签/排除、triggers 模式、条目 scanDepth 0/1/2、书级 `scan_depth` 覆盖、全局显式 0、组评分主+副关键词。原有七组加新组全部通过，`BUILD SUCCESSFUL in 49s`。
+- M1-04：逍遥 Android 12 + mock API 普通发送记录事件顺序 `sent(1) ; gen_start(normal,{},false) ; recv(2,normal) ; rendered(2,normal) ; updated(2) ; gen_end(2)`，无重复；mock capture 命中 `/v1/chat/completions`。
+- M1-05：8 项高级设置控件存在；设置 `scanDepth=0`、`maxScanDepth=0`、`minActivations=1`、`maxRecursionSteps=0`、`budgetCap=0`、组评分开；保存、重进和 force-stop 冷启动后均保持。
+- 未测：`prompt/messages` 别名（`QA Prompt Alias` 未跑完）、停止/编辑/切换会话/失败事件分支、M1-01/02/03 的模拟 API 实收内容、恢复继承/默认。
+- 环境：强制停止 DocumentsUI 后出现一次 ANR，日志原因为 `Input dispatching timed out (Application does not have a focused window)`，不是主线程阻塞；重启应用后恢复。主机内存紧张，收尾时 MEmu VM 退出。
+- 构建：`ScriptPanel.kt` 修复后 `:app:assembleDebug -Offline` 通过；当前 x86_64 APK SHA-256 为 `107a95b71d5eff04218d846ef809bce34c9b12fc81e5564214f912c88b2aac91`。`dist` 已刷新，测试新增的源码/文档会在提交后重新打包。

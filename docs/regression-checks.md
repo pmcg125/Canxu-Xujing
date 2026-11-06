@@ -13,6 +13,7 @@
 - `CardVariableChecks`：会话与消息作用域、候选快照写入、过期变量和候选拒绝、未实现作用域显式失败。
 - `VariableUpdateOrderChecks`：混合更新块按文本顺序执行、更新标签别名以及未知语句保留。
 - `MvuReferenceChecks`：根据原版解析和执行代码构造的定向用例，覆盖 lodash 命令、数组路径、带描述数值对、JSON 命令、JSON Patch、未知操作、未闭合注释、非法 path/from 与整块回滚；这些用例并未运行原版作为自动差分基准。
+- `WorldbookM1Checks`：M1-01/02/03 的定向检查，覆盖 characterFilter 名称/标签/排除、triggers 的 normal/regenerate/summary、条目显式 scanDepth 0/1/2、书级 `scan_depth` 覆盖全局、全局显式 0 与条目显式值、互斥组主+副关键词评分。固定 `Random(0)`，不替代模拟 API 的实际注入核对。
 
 使用 `node --experimental-vm-modules tools/test-card-modules.cjs` 检查恢复的 `openai.js`、`utils.js`、`world-info.js`、`preset-manager.js` 与宿主桥：生成调用、世界书读写/绑定、名称刷新、失败响应和预设加载/选择。Node 的 VM 模块仍为实验性接口。该检查不代表 Android WebView 中全部第三方角色卡均可运行。
 

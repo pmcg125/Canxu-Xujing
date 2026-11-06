@@ -186,16 +186,18 @@
 
 | 任务 ID | 需求与参考 | 实现位置 | 验收案例与证据 | 状态 / 未完成项 |
 | --- | --- | --- | --- | --- |
-| M1-01 世界书角色/生成模式过滤 | 参考 `index-legacy` 20739-20763；`PromptEngine.build` 传 mode | `WorldbookEngine.kt` `collect/activate`、`PromptEngine.kt` | 待测试 Agent 执行；需记录预期/实际激活 ID 与模拟 API 实收内容 | 已实现未验收；多角色、未知模式、过滤顺序待运行核对 |
-| M1-02 扫描深度继承 | 参考 `index-legacy` 21818-21879、22453-22482、23043-23070 | `WorldbookEngine.kt` `resolveBookScanDepth/scanDepthFor/maxExtraDepth` | 待执行；覆盖书级/全局/显式 0/非法值/minActivations 扩大 | 已实现未验收；书级与显式值的端到端证据未测 |
-| M1-03 互斥组关键词评分 | 参考 `index-legacy` 20764-20920 | `WorldbookEngine.kt` `groupScore` 与组选择 | 待执行；覆盖并列得分、sticky、override、权重随机 | 已实现未验收；随机源与多组场景未测 |
-| M1-04 消息生命周期事件 | 参考 `ChatView` 12098-12125、17785-17810、20402-20414、25680-25692、27490-27510 | `AppController.kt`、`CardMessage.kt`、`SessionScriptRuntime.kt`、`Chat.kt`、`card-runtime.js` | 待执行；记录发送/流式/续写/重生成/编辑/停止/失败/切换会话轨迹 | 已实现未验收；提交失败分支、渲染去重、停止事件范围未测 |
-| M1-05 世界书高级设置 | 参考 `ChatView` 14790-14840 | `SessionSettings.kt` | 待执行；修改→保存→离开→重进→重启，未知字段保留 | 已实现未验收；未在真机 Compose 操作 |
+| M1-01 世界书角色/生成模式过滤 | 参考 `index-legacy` 20739-20763；`PromptEngine.build` 传 mode | `WorldbookEngine.kt` `collect/activate`、`PromptEngine.kt` | `WorldbookM1Checks` 已覆盖名称/标签/排除/triggers；模拟 API 实际请求未记录 | 核心检查通过；多角色、未知模式、端到端未测 |
+| M1-02 扫描深度继承 | 参考 `index-legacy` 21818-21879、22453-22482、23043-23070 | `WorldbookEngine.kt` `resolveBookScanDepth/scanDepthFor/maxExtraDepth` | `WorldbookM1Checks` 已覆盖条目 0/1/2、书级覆盖、全局显式 0 | 核心检查通过；minActivations 扩大、非法值、端到端未测 |
+| M1-03 互斥组关键词评分 | 参考 `index-legacy` 20764-20920 | `WorldbookEngine.kt` `groupScore` 与组选择 | `WorldbookM1Checks` 已覆盖主+副关键词得分与全局开关 | 核心检查通过；并列、sticky、override、随机源未测 |
+| M1-04 消息生命周期事件 | 参考 `ChatView` 12098-12125、17785-17810、20402-20414、25680-25692、27490-27510 | `AppController.kt`、`CardMessage.kt`、`SessionScriptRuntime.kt`、`Chat.kt`、`card-runtime.js` | 逍遥 Android 12 + mock API 普通发送轨迹：`sent(1); gen_start(normal,{},false); recv(2,normal); rendered(2,normal); updated(2); gen_end(2)` | 普通发送通过；提示词别名、停止、编辑、切换会话、失败分支未测 |
+| M1-05 世界书高级设置 | 参考 `ChatView` 14790-14840 | `SessionSettings.kt` | 逍遥 Android 12：8 项控件存在，改 0/0/1/0/0 + 评分开，保存/重进/冷启动后保持 | UI 持久化通过；恢复默认、实际请求变化、未知字段深查未测 |
 | M2～M5 | 按后续阶段展开 | 待实施 | 待执行 | 后续阶段 |
 
 实现记录（2026-11-06）：M1-01～M1-05 已按上表位置落地，完成 `:app:compileDebugKotlin -Offline` 与 `:app:assembleDebug -Offline`，均通过。本次未运行测试、未启动模拟器、未安装 APK；状态一律为“已实现未验收”，不预填 PASS。测试 Agent 接手时按本文第 3 节和 `environment.md` 的逍遥 Android 12 流程执行，并把结果补进上表。
 
 源码复审（2026-11-06，基线 `f7be95a`）：已发现并修正互斥组、来源角色过滤、递归扩扫、配置别名覆盖、发送竞态和消息事件等问题，详见 [M1 源码验收与修正记录](m1-code-review-2026-11-06.md)。修正后的运行验收仍待执行；表中早期实现位置以当前源码为准。离屏消息的渲染事件须等待实际挂载，不再按提交即渲染处理。
+
+运行测试（2026-11-06 晚）：`WorldbookM1Checks` 已加入 `:core:regressionChecks` 并通过，覆盖 characterFilter 名称/标签/排除、triggers 模式、条目 scanDepth 0/1/2、书级 scan_depth 覆盖、全局显式 0、组评分主+副关键词。逍遥 Android 12 + mock API 记录了普通发送事件链，设置页 8 项高级参数修改后保存、重进和冷启动均保持；提示词别名、停止/编辑/切会话事件与 M1-01/02/03 的模拟 API 实收内容仍未覆盖，未计为整体 PASS。
 
 状态区分：待实施、已实现未验收、PASS、FAIL、BLOCKED、NOT TESTED。样本通过率只对该样本集成立；达到既有数量、分类与关键问题要求后才能讨论 90% 目标，不能用接口数量或构建成功替代。
 
