@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -53,6 +54,9 @@ internal fun BoxScope.ScriptPanelOverlay(panel: ScriptPanel, onClose: () -> Unit
     var offset by remember(panel.sessionId, panel.sourceId) { mutableStateOf(Offset.Zero) }
     val main = remember { Handler(Looper.getMainLooper()) }
     val anchor = if (panel.position == "top-end") Alignment.TopEnd else Alignment.BottomEnd
+    // The panel WebView is transparent over the Compose Card. Use the host surface brightness so
+    // author markup without explicit colors stays readable in both light and dark themes.
+    val panelDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
     Card(
         modifier = Modifier
             .align(anchor)
@@ -104,9 +108,10 @@ internal fun BoxScope.ScriptPanelOverlay(panel: ScriptPanel, onClose: () -> Unit
                     }
                 },
                 update = { view ->
-                    if (view.tag != panel.html) {
-                        view.tag = panel.html
-                        view.loadDataWithBaseURL(null, panelDocument(panel.html), "text/html", "utf-8", null)
+                    val key = panel.html + "|" + panelDark
+                    if (view.tag != key) {
+                        view.tag = key
+                        view.loadDataWithBaseURL(null, panelDocument(panel.html, panelDark), "text/html", "utf-8", null)
                     }
                 },
             )
@@ -114,13 +119,18 @@ internal fun BoxScope.ScriptPanelOverlay(panel: ScriptPanel, onClose: () -> Unit
     }
 }
 
-/** Keep author markup intact; add only the viewport and the small ST variable palette. */
-private fun panelDocument(html: String): String {
+/** Keep author markup intact; add only the viewport, palette and a static layout for forwarded fixed panels. */
+private fun panelDocument(html: String, dark: Boolean): String {
     if (html.contains("<html", ignoreCase = true)) return html
+    val foreground = if (dark) "#e6e1e5" else "#1c1b1f"
+    val background = if (dark) "#1c1b1f" else "#fffbfe"
     val compat = """
         <style>
-        :root{--SmartThemeBodyColor:#e6e1e5;--SmartThemeEmColor:#cac4d0;--SmartThemeQuoteColor:#8ab4f8;--SmartThemeBlurTintColor:#1c1b1f;--SmartThemeBorderColor:#49454f;--SmartThemeFontSize:13px}
-        html,body{margin:0;padding:0;background:transparent;color:#e6e1e5;font:13px/1.5 -apple-system,"Noto Sans SC",sans-serif;overflow:auto}
+        :root{color-scheme:${if (dark) "dark" else "light"};--SmartThemeBodyColor:$foreground;--SmartThemeEmColor:#cac4d0;--SmartThemeQuoteColor:#8ab4f8;--SmartThemeBlurTintColor:$background;--SmartThemeBorderColor:#49454f;--SmartThemeFontSize:13px}
+        html,body{margin:0;padding:0;background:$background;color:$foreground;font:13px/1.5 -apple-system,"Noto Sans SC",sans-serif;overflow:auto}
+        /* parent.document panels often use position:fixed/bottom offsets that would land outside this small host. */
+        body{display:flex;align-items:stretch}
+        body>*{position:static!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;width:100%!important;max-width:100%!important;height:auto!important;min-height:100%!important;max-height:none!important;margin:0!important}
         *{box-sizing:border-box;max-width:100%}
         </style>
     """.trimIndent()
