@@ -5,12 +5,12 @@
 检查使用纯 Kotlin `check()` 和已有运行时依赖，不依赖 Android 或真实模型服务。入口位于 `core/src/test/kotlin/app/xujing/core/RegressionChecks.kt`。
 
 - `ImportIntegrityChecks`：同一群聊备份合并两次、移除第一批资料后导出原版 ZIP，成员和发言人仍有关联；资料库媒体精确引用再导出；摘要进度随消息 ID 重连。
-- `SettingsRoundtripChecks`：删除全部资料后原版设置列表保持为空；文风编辑、未知字段、人设活动 ID 和残叙·残念附加资料去重。
+- `SettingsRoundtripChecks`：尾逗号/注释 JSON 导入、删除全部资料后原版设置列表保持为空；文风编辑、未知字段、人设活动 ID 和残叙·残念附加资料去重。
 - `PresetSamplingChecks`：默认关闭、有效参数覆盖、别名、非法值、连接扩展保留、输出上限冲突处理及提示词上下文预算。
 - `SummaryChecks`：旧剧情与近期原文边界、触发间隔、增量进度、上下文分批、源记录改变时拒绝保存、空结果拒绝保存。
 - `MacroCompatibilityChecks`：块式赋值、嵌套条件、未选分支无副作用、注释和 trim、文本/数字累加、有效预设参数，以及 `substituteRegex=2` 的元字符转义。
 - `CardLibraryChecks`：会话世界书隔离、读写及条目格式、角色绑定后的提示词激活、备份重复导入后的会话关联、删除清理、带额外字段的包装格式与预设选择。
-- `CardVariableChecks`：会话与消息作用域、候选快照写入、过期变量和候选拒绝、未实现作用域显式失败。
+- `CardVariableChecks`：会话与消息作用域、global 作用域读写、候选快照写入、过期变量和候选拒绝、未实现作用域显式失败。
 - `VariableUpdateOrderChecks`：混合更新块按文本顺序执行、更新标签别名以及未知语句保留。
 - `MvuReferenceChecks`：根据原版解析和执行代码构造的定向用例，覆盖 lodash 命令、数组路径、带描述数值对、JSON 命令、JSON Patch、未知操作、未闭合注释、非法 path/from 与整块回滚；这些用例并未运行原版作为自动差分基准。
 - `WorldbookM1Checks`：M1-01/02/03 的定向检查，覆盖 characterFilter 名称/标签/排除、triggers 的 normal/regenerate/summary、条目显式 scanDepth 0/1/2、书级 `scan_depth` 覆盖全局、全局显式 0 与条目显式值、互斥组主+副关键词评分。固定 `Random(0)`，不替代模拟 API 的实际注入核对。

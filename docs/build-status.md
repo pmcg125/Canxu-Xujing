@@ -126,3 +126,6 @@
 - 验收（逍遥 Android 12，x86_64）：消息 shell 自动填充和点击按钮两条路径均得到 `SHELL_INPUT_OK`，无 `ERR` 文本；live overlay 显示 `LIVE OVERLAY OK`，可关闭，返回重进会话后自动重建；logcat 无 `FATAL EXCEPTION` / `XujingLive` / `live overlay script failed`。
 - 构建：arm64 交付包 `4d0b3203491311cf234764bdb0a34e5a3e3eb0283f5923ba131ebe1b952d90e7`；本轮测试用 x86_64 包 `8b13917392d401524890e6f0686dc92c7c77136dfea0f3460ed91b6d17238a9e`，位于 `app/build/outputs/apk/debug/`。
 - 未完成：overlay 只支持一个 live 脚本；`parent.$`、完整 `.mes`/聊天 DOM、`scrollTop` 等仍未 shim；overlay 并集矩形之间的空白会覆盖聊天；`/send`、杀进程重启恢复、多个预设脚本未测。
+- 真实预设 `E.json` 冒烟：原文带尾逗号，旧 `AppJson` 拒绝导入（`Unexpected JSON token ... Trailing comma`）。已给 `AppJson` 开启 `allowTrailingComma`/`allowComments`，`E-original.json` 现在可导入为预设。orb 仍未出现，根因是文件中文被破坏成 `?`，脚本出现 `/???/` 非法正则和未定义标识符；同一会话切到合成 `QA Live Preset` 时 overlay 正常显示和关闭，证明管线可用。需要未损坏的原始 `E.json` 才能继续验 orb。
+- 预设正则：`E.json` 的 41 条规则在 `extensions.regex_scripts` 中（22 条启用），由 `RegexProcessor` 从当前预设读取，不会变成资料库里的独立正则条目；这是设计行为，不是导入丢失。
+- 新构建：arm64 `f0bb6c6bf5b1ce1549a9039271be130f7cde5057b59f7b1c35202837b1bbc430`；x86_64 测试包 `5a42bb3451a58fea7971fa6afdd4e11422757e0dd3de9b2cf6cb1bb0d7879ebf`。
