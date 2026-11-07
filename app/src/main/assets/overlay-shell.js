@@ -346,9 +346,24 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
       if (insideAny(el, fixedRoots)) continue;
       const rect = el.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) continue;
+      // The visible popover/menu usually lives inside the fixed orb root and extends past the
+      // root's 48x48 box. Register the union of the root plus its visible descendants so the
+      // proxy covers the whole open menu; the WebView hit-tests individual buttons inside.
+      let left = rect.left, top = rect.top, right = rect.right, bottom = rect.bottom;
+      for (const child of Array.from(el.querySelectorAll('*'))) {
+        if (SKIP_TAGS.has(child.tagName) || isShellNode(child)) continue;
+        const ccs = window.getComputedStyle(child);
+        if (isHidden(ccs)) continue;
+        const cr = child.getBoundingClientRect();
+        if (cr.width < 1 || cr.height < 1) continue;
+        if (cr.left < left) left = cr.left;
+        if (cr.top < top) top = cr.top;
+        if (cr.right > right) right = cr.right;
+        if (cr.bottom > bottom) bottom = cr.bottom;
+      }
       fixedRoots.add(el);
       resizeTargets.add(el);
-      pushTouchRect(out, 'fixed', el, rect);
+      pushTouchRect(out, 'fixed', el, { left, top, right, bottom, width: right - left, height: bottom - top });
     }
 
     // Pass 2: stray interactive nodes outside those roots (inline input bars, normal-flow links…).
