@@ -94,3 +94,5 @@ Set-Location D:\Canxu-project\Xujing
 编译与模拟器验证结果见 `docs/build-status.md`。针对性的纯 Kotlin 回归检查说明见 [回归检查](docs/regression-checks.md)，90% 目标的样本范围和计量方式见 [兼容性验收口径](docs/compatibility-assessment.md)。本地模拟 API 只校验请求和固定回复流程，不能代表真实模型质量或全部 PiuPiu 资料兼容。
 
 后续开发目标与验收要求见 [下一阶段开发目标（2026-11-06）](docs/development-goals-2026-11-06.md)：先补世界书与消息生命周期，再推进变量作用域、MVU、稳定性和聊天体验。
+
+预设正则、预设脚本、消息 HTML shell 与 B1 悬浮层的实现边界、兼容契约和排障方法见 [预设正则、脚本与悬浮面板兼容](docs/preset-panel-compat.md)。

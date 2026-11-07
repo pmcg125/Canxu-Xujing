@@ -156,3 +156,5 @@
 - 全 ABI 重新构建：`app-arm64-v8a-debug.apk`、`app-armeabi-v7a-debug.apk`、`app-universal-debug.apk`、`app-x86-debug.apk`、`app-x86_64-debug.apk`。
 - `dist` 版本化文件改名为 `xujing-0.2.0-*`，源码包为 `xujing-0.2.0-source.zip`；旧 `xujing-0.1.0-*` 已移除。
 - 真机 `192.168.8.80:5555`（M2012K11AC，Android 13 / arm64）覆盖安装 arm64 包，`dumpsys package` 确认 `versionName=0.2.0`、`versionCode=2`。
+
+预设正则、脚本、消息 shell、B1 悬浮层的实现边界、兼容契约和排障方法见 [预设正则、脚本与悬浮面板兼容](preset-panel-compat.md)。

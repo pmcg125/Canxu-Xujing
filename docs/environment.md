@@ -109,6 +109,25 @@ Start-Process 'D:\Roleplay\tooling\android-sdk\emulator\emulator.exe' `
   -ArgumentList '-avd','Xujing_Android13','-no-window','-no-snapshot-save','-gpu','swiftshader_indirect','-no-audio'
 ```
 
+### 可选：真机无线调试
+
+真机需先开启开发者选项与无线调试（或先 USB 连接执行 `adb tcpip 5555`）。IP 以当次实际地址为准，不要固定套用旧地址。
+
+```powershell
+$adb = 'D:\REA-Android\platform-tools\adb.exe'
+& $adb connect <手机IP>:5555
+& $adb devices -l
+& $adb -s <手机IP>:5555 shell getprop ro.product.cpu.abi
+& $adb -s <手机IP>:5555 install -r -t D:\Canxu-project\Xujing\dist\app-arm64-v8a-debug.apk
+```
+
+注意：
+
+- arm64 手机用 `app-arm64-v8a-debug.apk`。
+- 无线调试端口由系统分配时，需要先 `adb pair <IP>:<配对端口>`，再 `adb connect <IP>:<调试端口>`。
+- 安装前确认目标包哈希与 `dist/SHA256SUMS.txt` 一致；旧 x86_64 包不能装到 arm64 手机。
+- 真机上仍需打开全局「允许角色卡脚本」和会话「运行角色独立脚本」；`parent.document` 悬浮 UI 需要「预设 live 悬浮层（实验）」。
+
 ## 5. ADB 规范
 
 - 统一使用平台工具的 adb；逍遥自带 adb 的 server 是 31.0.3，平台工具是 37.0.1，混用会报 server 版本不匹配。

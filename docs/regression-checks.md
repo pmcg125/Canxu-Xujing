@@ -4,6 +4,8 @@
 
 检查使用纯 Kotlin `check()` 和已有运行时依赖，不依赖 Android 或真实模型服务。入口位于 `core/src/test/kotlin/app/xujing/core/RegressionChecks.kt`。
 
+预设正则、预设脚本、消息 HTML shell 与 live overlay 的手动验收见 [预设正则、脚本与悬浮面板兼容](preset-panel-compat.md)。
+
 - `ImportIntegrityChecks`：同一群聊备份合并两次、移除第一批资料后导出原版 ZIP，成员和发言人仍有关联；资料库媒体精确引用再导出；摘要进度随消息 ID 重连。
 - `SettingsRoundtripChecks`：尾逗号/注释 JSON 导入、删除全部资料后原版设置列表保持为空；文风编辑、未知字段、人设活动 ID 和残叙·残念附加资料去重。
 - `PresetSamplingChecks`：默认关闭、有效参数覆盖、别名、非法值、连接扩展保留、输出上限冲突处理及提示词上下文预算。
