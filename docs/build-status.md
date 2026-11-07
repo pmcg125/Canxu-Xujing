@@ -143,8 +143,9 @@
 
 - 结构：Activity `android.R.id.content` 上新增全屏透明 `FrameLayout`；全屏透明 `TouchThroughWebView` 只渲染，默认 `onTouchEvent` 返回 false；shell 用 `XujingLive.touchRects([{id,x,y,w,h}])` 注册交互区域，宿主为每个区域创建透明 proxy。
 - 事件：proxy 命中时把 MotionEvent 转发给 WebView 并消费；未命中时 proxy/FrameLayout/WebView 返回 false，事件继续落到下层 Compose。去掉了 union rect 裁剪和可见关闭按钮，返回键关闭 overlay。
-- shell：删除 `documentElement` translate 和 union rect；按 fixed 根节点 + 非 fixed 交互节点发布多个 rect，100ms 节流（拖动 80ms），空数组清空 proxy。
-- 验收：orb 显示且无关闭按钮；点击 orb 后真实菜单展开；菜单打开时点聊天输入框仍能获得焦点并输入 `MENUPAS`，证明未命中 proxy 的触摸已穿透；从 orb 位置拖动后 proxy 从 `482,881-554,953` 移到 `276,675-348,747`；返回键关闭 overlay 后仍停留在会话页，离开重进后 orb 重建；logcat 无 `XujingLive`/`FATAL` 错误。
+- shell：删除 `documentElement` translate 和 union rect；fixed 根节点按“根 + 可见子树并集”注册，覆盖 orb 内部向外展开的菜单；非 fixed 交互节点单独注册；100ms 节流（拖动 80ms），空数组清空 proxy。
+- 验收：orb 显示且无关闭按钮；点击 orb 后真实菜单展开；菜单打开时点聊天输入框仍能获得焦点并输入 `MENUPAS`，证明未命中 proxy 的触摸已穿透；从 orb 位置拖动后 proxy 从 `482,881-554,953` 移到 `276,675-348,747`；菜单 proxy 扩到 `275,0-721,1256` 后，点击“情感基调”成功展开子选项；返回键关闭 overlay 后仍停留在会话页，离开重进后 orb 重建；logcat 无 `XujingLive`/`FATAL` 错误。
 - 坐标修正：shell 回归 CSS 像素（`meta viewport width=device-width`），宿主创建 proxy 时按 `density` 换算到设备像素；此前 proxy/转发坐标与 orb 有 1.5× 偏差，点击落在空处。
-- 未完成：菜单自身关闭按钮未确认稳定；半透明全屏遮罩、多弹层重叠和 proxy 顺序未测；长列表滚动因测试会话内容不足未验证；返回键关闭后同一会话内不能重新打开，需要离开重进。
-- 构建：arm64 `31afb111ab77ff164aa48b54d2b402d18c1b52f8d69e773515841b16b589b548`。
+- 菜单修复：之前只注册 48×48 的 orb 根节点，菜单在根节点外，超出部分没有 proxy；现在把 fixed 根节点的可见子树并集纳入同一个 proxy。
+- 未完成：菜单自身关闭按钮未确认稳定（当前 orb 位置导致菜单顶部被裁）；半透明全屏遮罩、多弹层重叠和 proxy 顺序未测；长列表滚动因测试会话内容不足未验证；返回键关闭后同一会话内不能重新打开，需要离开重进。
+- 构建：arm64 `7be0c7660f881a575aa86fd970378c92611fa6b016ece52501346fdaf720eb31`。
