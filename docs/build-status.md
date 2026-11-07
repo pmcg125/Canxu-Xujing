@@ -126,6 +126,15 @@
 - 验收（逍遥 Android 12，x86_64）：消息 shell 自动填充和点击按钮两条路径均得到 `SHELL_INPUT_OK`，无 `ERR` 文本；live overlay 显示 `LIVE OVERLAY OK`，可关闭，返回重进会话后自动重建；logcat 无 `FATAL EXCEPTION` / `XujingLive` / `live overlay script failed`。
 - 构建：arm64 交付包 `4d0b3203491311cf234764bdb0a34e5a3e3eb0283f5923ba131ebe1b952d90e7`；本轮测试用 x86_64 包 `8b13917392d401524890e6f0686dc92c7c77136dfea0f3460ed91b6d17238a9e`，位于 `app/build/outputs/apk/debug/`。
 - 未完成：overlay 只支持一个 live 脚本；`parent.$`、完整 `.mes`/聊天 DOM、`scrollTop` 等仍未 shim；overlay 并集矩形之间的空白会覆盖聊天；`/send`、杀进程重启恢复、多个预设脚本未测。
+
+## 有效预设脚本与 overlay 修正（2026-11-07）
+
+- 新文件 `三人逆行（净化）.json` 有效：约 75,080 个 CJK，脚本 214,663 字符，`node --check` 通过，保留 41 条正则（22 条启用）。
+- 首次加载报 `$ is not defined`；overlay iframe 增加最小 `$`/`jQuery`、`toastr`、`errorCatched` shim 后脚本可加载。`session-script-runtime.js` 的加载失败日志改为输出 stack，便于定位。
+- 修正 overlay 坐标：`getBoundingClientRect` 返回的是 CSS/设备像素，原先又乘 density 导致 WebView 被移到屏幕外；现在 offset 使用原始像素，尺寸按 dp 转换。关闭按钮改为按 24dp 实际像素定位，避免压住 orb。
+- 验收：有效脚本的 orb 图标出现，拖动后 overlay rect 从 `654,1154 60×60` 变为 `316,582 60×60`，说明 fixed 节点和拖动链路生效；菜单/关闭未完整验证，orb 初始位置靠近底部输入栏会被部分遮挡。
+- `E.json` 仍因中文被破坏成 `?` 而无法运行，不是 App 管线问题；有效脚本已证明 overlay 可以承载这类 UI。
+- 新构建：arm64 `79d1dd8abd797c2e50de7275a2048198dc17a0f20f4a7810ba79a6616f35857f`。
 - 真实预设 `E.json` 冒烟：原文带尾逗号，旧 `AppJson` 拒绝导入（`Unexpected JSON token ... Trailing comma`）。已给 `AppJson` 开启 `allowTrailingComma`/`allowComments`，`E-original.json` 现在可导入为预设。orb 仍未出现，根因是文件中文被破坏成 `?`，脚本出现 `/???/` 非法正则和未定义标识符；同一会话切到合成 `QA Live Preset` 时 overlay 正常显示和关闭，证明管线可用。需要未损坏的原始 `E.json` 才能继续验 orb。
 - 预设正则：`E.json` 的 41 条规则在 `extensions.regex_scripts` 中（22 条启用），由 `RegexProcessor` 从当前预设读取，不会变成资料库里的独立正则条目；这是设计行为，不是导入丢失。
 - 新构建：arm64 `f0bb6c6bf5b1ce1549a9039271be130f7cde5057b59f7b1c35202837b1bbc430`；x86_64 测试包 `5a42bb3451a58fea7971fa6afdd4e11422757e0dd3de9b2cf6cb1bb0d7879ebf`。
