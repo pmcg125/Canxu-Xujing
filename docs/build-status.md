@@ -138,3 +138,12 @@
 - 真实预设 `E.json` 冒烟：原文带尾逗号，旧 `AppJson` 拒绝导入（`Unexpected JSON token ... Trailing comma`）。已给 `AppJson` 开启 `allowTrailingComma`/`allowComments`，`E-original.json` 现在可导入为预设。orb 仍未出现，根因是文件中文被破坏成 `?`，脚本出现 `/???/` 非法正则和未定义标识符；同一会话切到合成 `QA Live Preset` 时 overlay 正常显示和关闭，证明管线可用。需要未损坏的原始 `E.json` 才能继续验 orb。
 - 预设正则：`E.json` 的 41 条规则在 `extensions.regex_scripts` 中（22 条启用），由 `RegexProcessor` 从当前预设读取，不会变成资料库里的独立正则条目；这是设计行为，不是导入丢失。
 - 新构建：arm64 `f0bb6c6bf5b1ce1549a9039271be130f7cde5057b59f7b1c35202837b1bbc430`；x86_64 测试包 `5a42bb3451a58fea7971fa6afdd4e11422757e0dd3de9b2cf6cb1bb0d7879ebf`。
+
+## B1：全屏渲染 + touch proxy（2026-11-07）
+
+- 结构：Activity `android.R.id.content` 上新增全屏透明 `FrameLayout`；全屏透明 `TouchThroughWebView` 只渲染，默认 `onTouchEvent` 返回 false；shell 用 `XujingLive.touchRects([{id,x,y,w,h}])` 注册交互区域，宿主为每个区域创建透明 proxy。
+- 事件：proxy 命中时把 MotionEvent 转发给 WebView 并消费；未命中时 proxy/FrameLayout/WebView 返回 false，事件继续落到下层 Compose。去掉了 union rect 裁剪和可见关闭按钮，返回键关闭 overlay。
+- shell：删除 `documentElement` translate 和 union rect；按 fixed 根节点 + 非 fixed 交互节点发布多个 rect，100ms 节流（拖动 80ms），空数组清空 proxy。
+- 验收：orb 显示且无关闭按钮；orb 存在时点击聊天输入框能获得焦点并输入 `PAS`，证明未命中 proxy 的触摸已穿透；返回键关闭 overlay 后仍停留在会话页；logcat 无 `XujingLive`/`FATAL` 错误。
+- 未完成：本轮未重新验证 B1 下的 orb 点击/拖动（之前 rect 方案已验证）；返回键关闭后不能在同一会话内重新打开 overlay，需要离开重进或重启；菜单/多弹层/半透明全屏遮罩和 proxy 重叠顺序未测。
+- 构建：arm64 `3ac52f99365970d490cfe015d92200489d38ed524d71696af40dca2cbedcd300`。
