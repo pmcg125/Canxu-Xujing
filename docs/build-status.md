@@ -144,6 +144,7 @@
 - 结构：Activity `android.R.id.content` 上新增全屏透明 `FrameLayout`；全屏透明 `TouchThroughWebView` 只渲染，默认 `onTouchEvent` 返回 false；shell 用 `XujingLive.touchRects([{id,x,y,w,h}])` 注册交互区域，宿主为每个区域创建透明 proxy。
 - 事件：proxy 命中时把 MotionEvent 转发给 WebView 并消费；未命中时 proxy/FrameLayout/WebView 返回 false，事件继续落到下层 Compose。去掉了 union rect 裁剪和可见关闭按钮，返回键关闭 overlay。
 - shell：删除 `documentElement` translate 和 union rect；按 fixed 根节点 + 非 fixed 交互节点发布多个 rect，100ms 节流（拖动 80ms），空数组清空 proxy。
-- 验收：orb 显示且无关闭按钮；orb 存在时点击聊天输入框能获得焦点并输入 `PAS`，证明未命中 proxy 的触摸已穿透；返回键关闭 overlay 后仍停留在会话页；logcat 无 `XujingLive`/`FATAL` 错误。
-- 未完成：本轮未重新验证 B1 下的 orb 点击/拖动（之前 rect 方案已验证）；返回键关闭后不能在同一会话内重新打开 overlay，需要离开重进或重启；菜单/多弹层/半透明全屏遮罩和 proxy 重叠顺序未测。
-- 构建：arm64 `3ac52f99365970d490cfe015d92200489d38ed524d71696af40dca2cbedcd300`。
+- 验收：orb 显示且无关闭按钮；点击 orb 后真实菜单展开；菜单打开时点聊天输入框仍能获得焦点并输入 `MENUPAS`，证明未命中 proxy 的触摸已穿透；从 orb 位置拖动后 proxy 从 `482,881-554,953` 移到 `276,675-348,747`；返回键关闭 overlay 后仍停留在会话页，离开重进后 orb 重建；logcat 无 `XujingLive`/`FATAL` 错误。
+- 坐标修正：shell 回归 CSS 像素（`meta viewport width=device-width`），宿主创建 proxy 时按 `density` 换算到设备像素；此前 proxy/转发坐标与 orb 有 1.5× 偏差，点击落在空处。
+- 未完成：菜单自身关闭按钮未确认稳定；半透明全屏遮罩、多弹层重叠和 proxy 顺序未测；长列表滚动因测试会话内容不足未验证；返回键关闭后同一会话内不能重新打开，需要离开重进。
+- 构建：arm64 `31afb111ab77ff164aa48b54d2b402d18c1b52f8d69e773515841b16b589b548`。
