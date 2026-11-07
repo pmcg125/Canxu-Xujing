@@ -1,9 +1,14 @@
 package app.xujing.ui
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -11,46 +16,39 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.size
+import android.widget.FrameLayout
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import app.xujing.core.*
 import app.xujing.runtime.CardRuntimeHost
 import app.xujing.runtime.SessionHooks
 import kotlinx.serialization.json.*
-import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
- * Minimal live overlay spike.
+ * Live overlay state (B1).
  *
- * Preset scripts that build their UI through `parent.document` normally run inside a hidden
- * WebView: their floating nodes are serialised into HTML and shown in [ScriptPanelOverlay].
- * When a session opts in with `extra["liveOverlayEnabled"] == true` the first session script is
- * handed to this overlay instead, so the script runs in a visible WebView that can render,
- * drag and click real fixed nodes.
+ * The script still runs in the overlay shell, but the WebView is now a full-screen render surface.
+ * Scripts report the regions they want to receive touches in through `XujingLive.touchRects(...)`;
+ * the native host covers only those regions with transparent proxies. The rest of the overlay is
+ * transparent to input, so scrolling/typing in the Compose chat keeps working.
  *
- * Everything here is a plain Compose observable object; [sessionId]/[visible]/[rect] drive the
+ * Everything here is a plain Compose observable object; [sessionId]/[visible]/[revision] drive the
  * Composable and the script engine writes the script + snapshot. No changes to UiRuntime.
  */
-data class LiveOverlayRect(val x: Float, val y: Float, val width: Float, val height: Float)
-
 object LiveOverlayState {
     var sessionId by mutableStateOf<String?>(null)
         private set
@@ -63,9 +61,6 @@ object LiveOverlayState {
     var scriptName by mutableStateOf("")
         private set
     var scriptContent by mutableStateOf("")
-        private set
-    /** CSS-pixel bounds of the union of script fixed nodes. Null until the shell reports one. */
-    var rect by mutableStateOf<LiveOverlayRect?>(null)
         private set
     /** Scripts that stayed on the hidden runtime because only the first one goes live. */
     var extraScripts by mutableStateOf(0)
@@ -80,12 +75,17 @@ object LiveOverlayState {
         private set
     internal var view: WebView? = null
         private set
+    internal var proxyHost: TouchProxyHost? = null
+        private set
+
+    /** Interaction regions last reported by the shell, kept so a late attach can replay them. */
+    private var regions: List<LiveTouchRect> = emptyList()
 
     fun disable(session: String) {
         if (sessionId == session) {
             visible = false
             enabled = false
-            rect = null
+            clearRegions()
         }
     }
 
@@ -108,38 +108,38 @@ object LiveOverlayState {
         extraScripts = extra
         enabled = true
         visible = content.isNotBlank()
-        rect = null
+        clearRegions()
         revision++
     }
 
-    /** User closed the overlay chip. The engine keeps running but stops reporting to a dead view. */
+    /** User closed the overlay. The engine keeps running but stops reporting to a dead view. */
     fun close() {
         visible = false
-        rect = null
+        clearRegions()
     }
 
     fun dismiss(session: String) {
         if (sessionId == session) {
             visible = false
-            rect = null
+            clearRegions()
         }
     }
 
-    fun setRect(session: String, x: Float, y: Float, width: Float, height: Float) {
+    /** Shell -> host interaction regions. Replaces the whole set on every call. */
+    fun touchRects(session: String, json: String) {
         if (sessionId != session || !visible || scriptContent.isBlank()) return
-        if (width < 1f || height < 1f) return
-        val next = LiveOverlayRect(x, y, width, height)
-        val current = rect
-        if (current != null &&
-            abs(current.x - next.x) < 1.5f && abs(current.y - next.y) < 1.5f &&
-            abs(current.width - next.width) < 1.5f && abs(current.height - next.height) < 1.5f
-        ) return
-        rect = next
+        val next = parseTouchRects(json)
+        regions = next
+        proxyHost?.update(next)
     }
 
-    /** The shell has no drawable nodes: shrink the WebView out of the way but keep JS alive. */
-    fun collapse(session: String) {
-        if (sessionId == session) rect = null
+    private fun clearRegions() {
+        if (regions.isEmpty()) {
+            proxyHost?.clear()
+            return
+        }
+        regions = emptyList()
+        proxyHost?.clear()
     }
 
     fun updateSnapshot(session: String, data: JsonElement) {
@@ -149,12 +149,17 @@ object LiveOverlayState {
         view?.evaluateJavascript("window.__xujingLiveUpdate&&window.__xujingLiveUpdate(${safe(data)})", null)
     }
 
-    internal fun attach(target: WebView) {
+    internal fun attach(target: WebView, proxies: TouchProxyHost?) {
         view = target
+        proxyHost = proxies
+        proxies?.update(regions)
     }
 
     internal fun detach(target: WebView) {
-        if (view === target) view = null
+        if (view === target) {
+            view = null
+            proxyHost = null
+        }
     }
 
     internal fun dispatchEvent(session: String, event: String, payload: JsonElement, excludeToken: String?) {
@@ -183,21 +188,176 @@ object LiveOverlayState {
         .replace("\u2029", "\\u2029")
 }
 
+private fun parseTouchRects(value: String): List<LiveTouchRect> {
+    val array = runCatching { AppJson.parseToJsonElement(value) as? JsonArray }.getOrNull()
+        ?: return emptyList()
+    return array.mapNotNull { item ->
+        val obj = item as? JsonObject ?: return@mapNotNull null
+        val x = obj["x"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+        val y = obj["y"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+        val width = obj["w"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+        val height = obj["h"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+        if (width < 1.0 || height < 1.0) return@mapNotNull null
+        LiveTouchRect(
+            id = obj["id"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            x = x.toFloat(),
+            y = y.toFloat(),
+            width = width.toFloat(),
+            height = height.toFloat(),
+        )
+    }
+}
+
 private const val LIVE_BASE_URL = "https://cards.xujing.invalid/"
 
 /**
- * Positions a transparent WebView over the union of the script's floating nodes.
+ * Hosts the live script in a full-screen transparent WebView added directly to the Activity's
+ * `android.R.id.content` root. The WebView renders only; [TouchProxyHost] decides which touches
+ * reach it, every other touch falls through to the Compose chat below.
+ */
+@SuppressLint("ViewConstructor", "SetJavaScriptEnabled")
+internal class LiveOverlayHost(
+    private val context: Context,
+    private val sessionId: String,
+    private val main: Handler,
+    private val shellSource: String,
+) {
+    private val root = FrameLayout(context).apply {
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        isClickable = false
+        isFocusable = false
+        clipChildren = false
+        descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        visibility = View.GONE
+    }
+    private var web: TouchThroughWebView? = null
+    private var proxies: TouchProxyHost? = null
+    private var loadedKey: String? = null
+    private var loadedTheme: String? = null
+
+    /** Adds the overlay above Compose. Returns false when no Activity/content view is reachable. */
+    fun attach(): Boolean {
+        if (root.parent != null) return true
+        val activity = context.findActivity() ?: return false
+        val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return false
+        content.addView(
+            root,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        return true
+    }
+
+    fun setVisible(visible: Boolean) {
+        root.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) {
+            web?.forwarding = false
+            proxies?.clear()
+        }
+    }
+
+    /** Loads/reloads the shell for [key]; theme-only changes are pushed without a reload. */
+    fun update(boot: JsonObject, key: String, theme: String) {
+        val target = ensureWeb()
+        if (loadedKey != key) {
+            loadedKey = key
+            loadedTheme = theme
+            target.loadDataWithBaseURL(
+                LIVE_BASE_URL,
+                shellDocument(shellSource, boot),
+                "text/html",
+                "utf-8",
+                null,
+            )
+        } else if (loadedTheme != theme) {
+            loadedTheme = theme
+            target.evaluateJavascript(
+                "window.__xujingLiveTheme&&window.__xujingLiveTheme($theme)",
+                null,
+            )
+        }
+    }
+
+    private fun ensureWeb(): TouchThroughWebView {
+        web?.let { return it }
+        val created = TouchThroughWebView(context).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isFocusable = false
+            isClickable = false
+            isFocusableInTouchMode = false
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = false
+                allowContentAccess = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
+            }
+            addJavascriptInterface(LiveSurfaceBridge(sessionId, main), "XujingLive")
+            addJavascriptInterface(LiveScriptBridge(sessionId, main) { this@LiveOverlayHost.web }, "XujingBridge")
+            webViewClient = liveClient()
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                    Log.w("XujingLive", "console ${message.message()} @${message.lineNumber()}")
+                    return true
+                }
+            }
+        }
+        root.addView(
+            created,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        val touch = TouchProxyHost(created)
+        touch.attachTo(root)
+        web = created
+        proxies = touch
+        LiveOverlayState.attach(created, touch)
+        return created
+    }
+
+    /** Removes the overlay from the root and releases the WebView; the host can be re-attached. */
+    fun remove() {
+        val target = web
+        if (target != null) {
+            LiveOverlayState.detach(target)
+            target.forwarding = false
+        }
+        proxies?.detach()
+        proxies = null
+        root.removeAllViews()
+        if (target != null) {
+            target.stopLoading()
+            target.removeJavascriptInterface("XujingLive")
+            target.removeJavascriptInterface("XujingBridge")
+            target.destroy()
+        }
+        web = null
+        loadedKey = null
+        loadedTheme = null
+        (root.parent as? ViewGroup)?.removeView(root)
+    }
+}
+
+/**
+ * Mounts the live overlay while the session has a visible live script.
  *
- * The shell page is screen-sized even when the Android WebView is tiny: fixed nodes are laid out
- * against the shell's transformed body, so the union can be measured in a collapsed viewport and
- * then only that region is covered, leaving the chat touchable everywhere else.
+ * A native full-screen [FrameLayout] is added to the Activity root so it sits above Compose. The
+ * WebView is render-only; [TouchProxyHost] supplies the interaction regions. The system back key
+ * closes the overlay (no floating close button).
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun LiveScriptOverlay(sessionId: String) {
-    if (LiveOverlayState.sessionId != sessionId || !LiveOverlayState.visible) return
     val context = LocalContext.current
     val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val composeView = LocalView.current
     val scheme = MaterialTheme.colorScheme
     val dark = scheme.surface.luminance() < 0.5f
     val theme = remember(scheme.surface, scheme.onSurface, scheme.primary, scheme.surfaceVariant, scheme.outline, dark) {
@@ -215,15 +375,35 @@ internal fun LiveScriptOverlay(sessionId: String) {
         context.assets.open("overlay-shell.js").bufferedReader().use { it.readText() }
     }
     val main = remember { Handler(Looper.getMainLooper()) }
-    val holder = remember { arrayOfNulls<WebView>(1) }
-    val themeHolder = remember { arrayOfNulls<String>(1) }
+    val host = remember(sessionId, context) {
+        LiveOverlayHost(context, sessionId, main, shellSource)
+    }
+    val active = LiveOverlayState.sessionId == sessionId &&
+        LiveOverlayState.visible &&
+        LiveOverlayState.scriptContent.isNotBlank()
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val screenWidth = with(density) { maxWidth.toPx() }
-        val screenHeight = with(density) { maxHeight.toPx() }
-        // No rect yet: stay at 1x1 so loading scripts never eat the chat. The shell still measures
-        // because its body is laid out at the full screen size.
-        val rect = LiveOverlayState.rect ?: LiveOverlayRect(0f, 0f, 1f, 1f)
+    // Full-screen device pixels, matching the shell's coordinate space. Prefer the laid-out Compose
+    // view (edge-to-edge content size) and fall back to the configuration while it is still 0.
+    val configuredWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val configuredHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val screenWidth = if (composeView.width > 0) composeView.width.toFloat() else configuredWidth
+    val screenHeight = if (composeView.height > 0) composeView.height.toFloat() else configuredHeight
+
+    DisposableEffect(sessionId, active) {
+        if (active) {
+            host.attach()
+            host.setVisible(true)
+            onDispose {
+                host.setVisible(false)
+                host.remove()
+            }
+        } else {
+            host.remove()
+            onDispose { }
+        }
+    }
+
+    if (active) {
         val boot = buildJsonObject {
             put("sessionId", sessionId)
             put("scriptId", LiveOverlayState.scriptId)
@@ -235,81 +415,24 @@ internal fun LiveScriptOverlay(sessionId: String) {
             put("screenHeight", screenHeight)
             put("theme", theme)
         }
-        val viewKey = LiveOverlayState.revision.toString() + ":" + screenWidth + "x" + screenHeight + ":" + dark
-        AndroidView(
-            modifier = Modifier
-                .offset {
-                    IntOffset(rect.x.roundToInt(), rect.y.roundToInt())
-                }
-                .size(
-                    with(density) { rect.width.coerceAtLeast(1f).toDp() },
-                    with(density) { rect.height.coerceAtLeast(1f).toDp() },
-                ),
-            factory = { ctx ->
-                val web = WebView(ctx)
-                web.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                web.settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    allowFileAccess = false
-                    allowContentAccess = false
-                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                    setSupportMultipleWindows(false)
-                    javaScriptCanOpenWindowsAutomatically = false
-                }
-                web.addJavascriptInterface(LiveSurfaceBridge(sessionId, main), "XujingLive")
-                web.addJavascriptInterface(LiveScriptBridge(sessionId, main) { web }, "XujingBridge")
-                web.webViewClient = liveClient()
-                web.webChromeClient = object : WebChromeClient() {
-                    override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
-                        Log.w("XujingLive", "console ${message.message()} @${message.lineNumber()}")
-                        return true
-                    }
-                }
-                web.tag = ""
-                holder[0] = web
-                LiveOverlayState.attach(web)
-                web
-            },
-            update = { web ->
-                val themeJson = theme.toString()
-                if (web.tag != viewKey) {
-                    web.tag = viewKey
-                    themeHolder[0] = themeJson
-                    web.loadDataWithBaseURL(
-                        LIVE_BASE_URL,
-                        shellDocument(shellSource, boot),
-                        "text/html",
-                        "utf-8",
-                        null,
-                    )
-                } else if (themeHolder[0] != themeJson) {
-                    themeHolder[0] = themeJson
-                    web.evaluateJavascript(
-                        "window.__xujingLiveTheme&&window.__xujingLiveTheme($themeJson)",
-                        null,
-                    )
-                }
-            },
-        )
-        if (LiveOverlayState.rect != null) {
-            val chipSize = with(density) { 24.dp.toPx() }
-            val chipX = (rect.x + rect.width - chipSize).coerceIn(0f, (screenWidth - chipSize).coerceAtLeast(0f))
-            val chipY = (rect.y - chipSize - 8f).coerceIn(0f, (screenHeight - chipSize).coerceAtLeast(0f))
-            ScriptCloseChip(
-                onClose = { LiveOverlayState.close() },
-                modifier = Modifier.offset {
-                    IntOffset(chipX.roundToInt(), chipY.roundToInt())
-                },
-            )
+        val bootKey = LiveOverlayState.revision.toString() + ":" +
+            screenWidth.toInt() + "x" + screenHeight.toInt() + ":" + dark
+        val themeJson = theme.toString()
+        LaunchedEffect(bootKey, themeJson) {
+            host.update(boot, bootKey, themeJson)
         }
     }
 
-    DisposableEffect(sessionId) {
-        onDispose {
-            holder[0]?.let { LiveOverlayState.detach(it) }
-        }
+    BackHandler(enabled = active) { LiveOverlayState.close() }
+}
+
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
     }
+    return null
 }
 
 private fun hexColor(value: androidx.compose.ui.graphics.Color): String =
@@ -348,16 +471,11 @@ private fun liveClient() = object : WebViewClient() {
     }
 }
 
-/** Shell -> host geometry/close bridge (`XujingLive`). */
+/** Shell -> host interaction/close bridge (`XujingLive`). */
 internal class LiveSurfaceBridge(private val sessionId: String, private val main: Handler) {
     @JavascriptInterface
-    fun rect(x: Double, y: Double, width: Double, height: Double) {
-        main.post { LiveOverlayState.setRect(sessionId, x.toFloat(), y.toFloat(), width.toFloat(), height.toFloat()) }
-    }
-
-    @JavascriptInterface
-    fun empty() {
-        main.post { LiveOverlayState.collapse(sessionId) }
+    fun touchRects(value: String) {
+        main.post { LiveOverlayState.touchRects(sessionId, value) }
     }
 
     @JavascriptInterface

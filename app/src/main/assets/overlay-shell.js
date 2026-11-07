@@ -1,9 +1,11 @@
 /*
  * Live overlay shell for preset/session scripts (spike, opt-in per session).
  *
- * The Android host loads this document into a small transparent WebView. The document itself is
- * laid out at the full screen size and translated so scripts that use `position:fixed` keep their
- * natural screen coordinates even though the WebView only covers the union of their nodes.
+ * The Android host loads this document into a full-screen transparent WebView. Nothing is
+ * clipped, translated or resized here: the shell document is laid out at the logical screen size
+ * and the host receives a list of interactive rectangles ("touch proxies"). It builds one native
+ * transparent proxy per rect, so touches inside those rects reach this WebView and everything
+ * else falls through to the chat underneath.
  *
  * The real script runs inside an iframe (same runtime as the hidden session host). Because the
  * iframe's parent is this shell, `parent.document` in preset code points here, and appending a
@@ -15,7 +17,6 @@
 
   const boot = window.__XUJING_LIVE_BOOT__ || {};
   const host = window.XujingLive;
-  const PAD = 6;
 
   const state = {
     sessionId: String(boot.sessionId || ''),
@@ -26,8 +27,6 @@
       w: Math.max(1, Math.round(Number(boot.screenWidth) || window.innerWidth || 360)),
       h: Math.max(1, Math.round(Number(boot.screenHeight) || window.innerHeight || 640)),
     },
-    offset: { x: 0, y: 0 },
-    last: null,
     snapshot: boot.snapshot || {},
     initialized: false,
     frame: null,
@@ -35,6 +34,9 @@
     pending: new Map(),
     events: [],
     buttons: [],
+    touchJson: '',
+    dragging: false,
+    warnedTouch: false,
   };
 
   const root = document.documentElement;
@@ -65,18 +67,17 @@
   const style = document.createElement('style');
   style.textContent = `
 :root{--xujing-screen-w:360px;--xujing-screen-h:640px}
-html{width:var(--xujing-screen-w);height:var(--xujing-screen-h);margin:0;padding:0;overflow:hidden;background:transparent;transform-origin:0 0;transform:translate(0,0)}
-body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xujing-screen-h);margin:0;padding:0;overflow:visible;background:transparent;transform-origin:0 0;transform:none;color:var(--SmartThemeBodyColor);font:var(--SmartThemeFontSize)/1.5 -apple-system,"Noto Sans SC",sans-serif}
+html{width:var(--xujing-screen-w);height:var(--xujing-screen-h);margin:0;padding:0;overflow:hidden;background:transparent}
+body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xujing-screen-h);margin:0;padding:0;overflow:visible;background:transparent;color:var(--SmartThemeBodyColor);font:var(--SmartThemeFontSize)/1.5 -apple-system,"Noto Sans SC",sans-serif}
 #xujing-live-shims{position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden;pointer-events:none}
-#xujing-live-frame{position:absolute;left:0;top:0;border:0;opacity:0;pointer-events:none}
-#xujing-live-status{position:fixed;left:8px;bottom:8px;padding:2px 6px;border-radius:6px;font-size:11px;opacity:.55;background:var(--SmartThemeBlurTintColor);color:var(--SmartThemeEmColor);pointer-events:none}
+#xujing-live-frame{position:absolute;left:0;top:0;width:100%;height:100%;border:0;opacity:0;pointer-events:none}
 `;
   mark(style);
   document.head.appendChild(style);
   applyTheme(boot.theme);
 
-  // The Android WebView can be 1x1 while a script is still building its UI. Presets often read
-  // the parent viewport for positioning, so report the logical screen instead of the clip window.
+  // The Android WebView can be resized by the host at any time. Presets often read the parent
+  // viewport for positioning, so report the logical screen instead of the backing view size.
   try {
     Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => state.screen.w });
     Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => state.screen.h });
@@ -86,7 +87,7 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
 
   /* ------------------------------------------------------- app DOM shims */
   // Containers the presets usually reach through `parent.document`. They are marked as shell
-  // nodes so the geometry observer never treats them as script UI.
+  // nodes so the touch-publisher never treats them as script UI.
   const shims = mark(document.createElement('div'));
   shims.id = 'xujing-live-shims';
   document.body.appendChild(shims);
@@ -227,89 +228,204 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
     } finally {
       state.initialized = true;
       flush();
-      measure(true);
+      publishTouchRects(true);
     }
   };
   frame.srcdoc = pageFor();
   document.body.appendChild(frame);
 
-  /* --------------------------------------------------------- geometry sync */
+  /* --------------------------------------------------------- touch proxies */
 
-  const measure = force => {
-    const body = document.body;
-    if (!body) return;
-    const nodes = [];
-    const consider = el => {
-      if (!el || el.nodeType !== 1) return;
-      if (el.hasAttribute('data-xujing-shell')) return;
-      const tag = el.tagName;
-      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'META' || tag === 'TEMPLATE' || tag === 'NOSCRIPT') return;
-      const computed = window.getComputedStyle(el);
-      if (computed.display === 'none' || computed.visibility === 'hidden' || computed.opacity === '0') return;
-      const r = el.getBoundingClientRect();
-      if (r.width < 0.5 || r.height < 0.5) return;
-      nodes.push(r);
-    };
-    for (const el of Array.from(body.children)) consider(el);
-    // The orb preset appends its root to documentElement, not body. Include those siblings too.
-    for (const el of Array.from(document.documentElement.children)) {
-      if (el === document.head || el === document.body) continue;
-      consider(el);
+  // The host can only forward touches inside one of these rects, so the list has to describe the
+  // script's real interactive surface: top-level fixed roots (orbs, menus, popovers) plus stray
+  // interactive nodes that are laid out in normal flow. Everything the script paints on top of the
+  // chat must be listed; everything listed steals touches from the chat, so keep it tight.
+  const TOUCH_DEBOUNCE_MS = 100;
+  const DRAG_DEBOUNCE_MS = 80;
+  const MAX_TOUCH_RECTS = 128;
+  const TOUCH_SELECTOR = 'button,a,input,select,textarea,[role="button"],[onclick],[data-xujing-touch]';
+  const SKIP_TAGS = new Set([
+    'HTML', 'BODY', 'HEAD', 'SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT',
+    'BASE', 'TITLE', 'IFRAME',
+  ]);
+
+  // Ids must stay stable across publishes even when siblings are inserted, so remember the base
+  // id per element instead of using a live DOM index.
+  const baseIds = new WeakMap();
+  let baseIdSeq = 0;
+  const baseIdFor = el => {
+    let id = baseIds.get(el);
+    if (!id) {
+      id = el.id || ('n' + (++baseIdSeq));
+      baseIds.set(el, id);
     }
-    for (const el of Array.from(document.documentElement.querySelectorAll('*'))) {
-      if (window.getComputedStyle(el).position === 'fixed') consider(el);
-    }
-    if (!nodes.length) {
-      state.last = null;
-      if (state.initialized && host) host.empty();
-      return;
-    }
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const r of nodes) {
-      const x = r.left + state.offset.x;
-      const y = r.top + state.offset.y;
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x + r.width > maxX) maxX = x + r.width;
-      if (y + r.height > maxY) maxY = y + r.height;
-    }
-    const x = Math.max(0, Math.round(minX - PAD));
-    const y = Math.max(0, Math.round(minY - PAD));
-    const w = Math.min(state.screen.w - x, Math.round(maxX - minX + PAD * 2));
-    const h = Math.min(state.screen.h - y, Math.round(maxY - minY + PAD * 2));
-    if (w < 1 || h < 1) return;
-    const next = { x, y, w, h };
-    const last = state.last;
-    const same = last && Math.abs(last.x - x) < 1.5 && Math.abs(last.y - y) < 1.5 &&
-      Math.abs(last.w - w) < 1.5 && Math.abs(last.h - h) < 1.5;
-    state.last = next;
-    if (same && !force) return;
-    // Keep the script's screen coordinates stable while the host moves the WebView. The root
-    // element must carry the transform: fixed nodes appended to documentElement ignore body.
-    state.offset.x = x;
-    state.offset.y = y;
-    document.documentElement.style.transform = 'translate(' + (-x) + 'px,' + (-y) + 'px)';
-    if (host) host.rect(x, y, w, h);
+    return id;
   };
 
-  let scheduled = false;
-  const schedule = () => {
-    if (scheduled) return;
-    scheduled = true;
-    requestAnimationFrame(() => { scheduled = false; measure(false); });
+  const numberOf = value => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 1;
   };
-  new MutationObserver(schedule).observe(document.body, {
-    subtree: true, childList: true, attributes: true,
-  });
-  let lastTick = 0;
-  const tick = timestamp => {
-    if (!document.hidden && timestamp - lastTick > 120) {
-      lastTick = timestamp;
-      measure(false);
+
+  const isHidden = cs => {
+    if (!cs) return true;
+    if (cs.display === 'none') return true;
+    if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return true;
+    if (numberOf(cs.opacity) <= 0.01) return true;
+    if (cs.pointerEvents === 'none') return true;
+    return false;
+  };
+
+  const isShellNode = el => !!(el && el.closest && el.closest('[data-xujing-shell]'));
+
+  const insideAny = (el, set) => {
+    for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+      if (set.has(parent)) return true;
     }
-    requestAnimationFrame(tick);
+    return false;
   };
-  requestAnimationFrame(tick);
+
+  const matchesTouch = el => {
+    try { return !!el.matches(TOUCH_SELECTOR); }
+    catch (error) { return false; }
+  };
+
+  // Screen-relative, clipped, integer CSS pixels. Rect coordinates are already relative to the
+  // shell's top-left corner because the shell document is never translated.
+  const pushTouchRect = (out, prefix, el, rect) => {
+    const sw = state.screen.w;
+    const sh = state.screen.h;
+    const left = Math.max(0, Math.min(sw, rect.left));
+    const top = Math.max(0, Math.min(sh, rect.top));
+    const right = Math.max(0, Math.min(sw, rect.right));
+    const bottom = Math.max(0, Math.min(sh, rect.bottom));
+    const x = Math.round(left);
+    const y = Math.round(top);
+    const w = Math.round(right) - x;
+    const h = Math.round(bottom) - y;
+    if (w < 2 || h < 2) return;
+    out.push({ id: prefix + ':' + baseIdFor(el), x, y, w, h });
+  };
+
+  const resizeObserved = new Set();
+  const resizeObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => scheduleTouch())
+    : null;
+  const refreshResizeTargets = targets => {
+    if (!resizeObserver) return;
+    for (const el of Array.from(resizeObserved)) {
+      if (targets.has(el)) continue;
+      try { resizeObserver.unobserve(el); } catch (error) { console.error(error); }
+      resizeObserved.delete(el);
+    }
+    for (const el of targets) {
+      if (!el || resizeObserved.has(el)) continue;
+      try { resizeObserver.observe(el); resizeObserved.add(el); } catch (error) { console.error(error); }
+    }
+  };
+
+  const publishTouchRects = force => {
+    if (!document.body) return;
+    const out = [];
+    const fixedRoots = new Set();
+    const resizeTargets = new Set([document.body]);
+    const all = Array.from(document.documentElement.querySelectorAll('*'));
+
+    // Pass 1: outer fixed roots. A nested fixed node inside a root needs no rect of its own; the
+    // root's proxy already covers it and the WebView hit-tests the children itself.
+    for (const el of all) {
+      if (out.length >= MAX_TOUCH_RECTS) break;
+      if (!el || el.nodeType !== 1) continue;
+      if (SKIP_TAGS.has(el.tagName)) continue;
+      if (isShellNode(el)) continue;
+      const cs = window.getComputedStyle(el);
+      if (!cs || cs.position !== 'fixed') continue;
+      // A `pointer-events:none` fixed container is not a touch target, but its children may opt
+      // back in with `pointer-events:auto`; leave them to pass 2.
+      if (isHidden(cs)) continue;
+      if (insideAny(el, fixedRoots)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      fixedRoots.add(el);
+      resizeTargets.add(el);
+      pushTouchRect(out, 'fixed', el, rect);
+    }
+
+    // Pass 2: stray interactive nodes outside those roots (inline input bars, normal-flow links…).
+    for (const el of all) {
+      if (out.length >= MAX_TOUCH_RECTS) break;
+      if (!el || el.nodeType !== 1) continue;
+      if (SKIP_TAGS.has(el.tagName)) continue;
+      if (isShellNode(el)) continue;
+      if (insideAny(el, fixedRoots)) continue;
+      const cs = window.getComputedStyle(el);
+      if (!cs || cs.position === 'fixed') continue;
+      if (isHidden(cs)) continue;
+      const selected = matchesTouch(el);
+      const pointer = cs.cursor === 'pointer';
+      if (!selected && !pointer) continue;
+      // `cursor` is inherited: a clickable card would otherwise emit one rect per descendant.
+      // The container's rect already covers them and the WebView hit-tests inside it.
+      if (!selected) {
+        const parent = el.parentElement;
+        if (parent && window.getComputedStyle(parent).cursor === 'pointer') continue;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      pushTouchRect(out, 'el', el, rect);
+    }
+
+    const json = JSON.stringify(out);
+    refreshResizeTargets(resizeTargets);
+    if (!force && json === state.touchJson) return;
+    state.touchJson = json;
+    if (host && typeof host.touchRects === 'function') {
+      try { host.touchRects(json); }
+      catch (error) { console.error('touchRects failed', error); }
+    } else if (!state.warnedTouch) {
+      state.warnedTouch = true;
+      console.warn('XujingLive.touchRects 不可用：overlay 没有可交互区域');
+    }
+  };
+
+  // Throttle instead of a trailing debounce: while a node is dragged the publish must still run
+  // about every 100ms, otherwise the proxy would freeze until the drag stops.
+  let touchTimer = 0;
+  let forceNext = false;
+  const scheduleTouch = (delay, force) => {
+    if (force) forceNext = true;
+    if (touchTimer) return;
+    const wait = Number.isFinite(delay) ? Math.max(0, delay) : TOUCH_DEBOUNCE_MS;
+    touchTimer = setTimeout(() => {
+      touchTimer = 0;
+      const forced = forceNext;
+      forceNext = false;
+      publishTouchRects(forced);
+    }, wait);
+  };
+
+  const touchObserver = typeof MutationObserver === 'function'
+    ? new MutationObserver(() => scheduleTouch())
+    : null;
+  if (touchObserver) {
+    touchObserver.observe(document.documentElement, {
+      subtree: true, childList: true, attributes: true,
+    });
+  }
+
+  const onPointerActivity = event => {
+    if (!event) return;
+    if (event.type === 'pointerdown') state.dragging = true;
+    else if (event.type === 'pointerup' || event.type === 'pointercancel') state.dragging = false;
+    scheduleTouch(state.dragging ? DRAG_DEBOUNCE_MS : TOUCH_DEBOUNCE_MS);
+  };
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'click']) {
+    window.addEventListener(type, onPointerActivity, { passive: true, capture: true });
+  }
+  for (const type of ['scroll', 'transitionrun', 'transitionend', 'animationstart', 'animationend', 'animationiteration']) {
+    window.addEventListener(type, () => scheduleTouch(), { passive: true, capture: true });
+  }
+  window.addEventListener('resize', () => scheduleTouch(0), { passive: true });
 
   /* -------------------------------------------------------------- host API */
 
@@ -332,7 +448,7 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
     renderMessageShim();
     try { state.frame?.contentWindow?.__xujingUpdate?.({ ...state.snapshot, runtimeToken: state.scriptId }); }
     catch (error) { console.error(error); }
-    schedule();
+    scheduleTouch();
   };
 
   window.__xujingLiveTheme = next => applyTheme(next);
@@ -346,7 +462,7 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
       state.frame.style.width = state.screen.w + 'px';
       state.frame.style.height = state.screen.h + 'px';
     }
-    schedule();
+    scheduleTouch(0);
   };
 
   window.__xujingLiveDispatch = async (event, payload, excludeToken) => {
@@ -379,9 +495,12 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
     state.pending.clear();
     state.events.length = 0;
     state.buttons.length = 0;
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = 0; }
+    try { touchObserver?.disconnect(); } catch (error) { console.error(error); }
+    try { resizeObserver?.disconnect(); resizeObserved.clear(); } catch (error) { console.error(error); }
     try { state.frame?.contentWindow?.dispatchEvent?.(new Event('pagehide')); }
     catch (error) { console.error(error); }
   };
 
-  measure(true);
+  publishTouchRects(true);
 })();
