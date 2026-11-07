@@ -1,11 +1,21 @@
 package app.xujing.core
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.util.UUID
 
 fun newId(): String = UUID.randomUUID().toString()
-val AppJson = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = true; isLenient = true }
+@OptIn(ExperimentalSerializationApi::class)
+val AppJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+    prettyPrint = true
+    isLenient = true
+    // PiuPiu/SillyTavern exports sometimes contain trailing commas or comments.
+    allowTrailingComma = true
+    allowComments = true
+}
 fun JsonObject.text(key: String, fallback: String = ""): String = (this[key] as? JsonPrimitive)?.contentOrNull ?: fallback
 fun JsonObject.obj(key: String): JsonObject = this[key] as? JsonObject ?: JsonObject(emptyMap())
 fun JsonObject.array(key: String): JsonArray = this[key] as? JsonArray ?: JsonArray(emptyList())

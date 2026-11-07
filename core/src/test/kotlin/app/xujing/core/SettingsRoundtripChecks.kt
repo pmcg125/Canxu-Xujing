@@ -8,6 +8,9 @@ import kotlinx.serialization.json.*
 /** Regressions for native settings export as well as the lossless Xujing extension. */
 object SettingsRoundtripChecks {
     fun run() {
+        // PiuPiu exports may contain trailing commas and comments; import must not reject them.
+        check(AppJson.parseToJsonElement("""{"trailing":1,}""").jsonObject["trailing"] == JsonPrimitive(1))
+        check(AppJson.parseToJsonElement("""{"commented":2 /* keep */}""").jsonObject["commented"] == JsonPrimitive(2))
         val original = AppJson.parseToJsonElement("""{
           "app":"piupiu_settings_backup","schemaVersion":1,"unknownEnvelope":{"keep":true},
           "settings":{
