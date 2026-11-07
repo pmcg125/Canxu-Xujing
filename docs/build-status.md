@@ -1,6 +1,6 @@
 # 构建记录
 
-日期：2026-11-01。版本：0.1.0 开发版。
+日期：2026-11-01。当前版本：0.2.0 开发版。
 
 - `:core:compileKotlin` 首次构建通过，后续修改随 APK 构建重新编译。
 - Android SDK 36、Build Tools 35.0.0、Gradle 8.13 已安装至 D 盘；下载的工具归档已核对上游校验值。
@@ -12,11 +12,11 @@
 
 ## 安装包
 
-包名 `app.xujing`，版本 `0.1.0`（versionCode 1），最低 Android 8.0（API 26）。开发签名，不是正式发行版本。
+包名 `app.xujing`，当前版本 `0.2.0`（versionCode 2），最低 Android 8.0（API 26）。开发签名，不是正式发行版本。
 
 产物包含 ARM64、armeabi-v7a、x86、x86_64 分包和通用包；当前 SHA-256 值位于 `dist/SHA256SUMS.txt`。安装包不包含模型权重。
 
-源码归档为 `dist/xujing-0.1.0-source.zip`，不包含构建缓存、本机 SDK 路径配置、签名密钥、APK 或模型权重。`README.md` 记录本机构建方法。
+源码归档为 `dist/xujing-0.2.0-source.zip`，不包含构建缓存、本机 SDK 路径配置、签名密钥、APK 或模型权重。`README.md` 记录本机构建方法。
 
 ## 尚未验证
 
@@ -149,3 +149,10 @@
 - 菜单修复：之前只注册 48×48 的 orb 根节点，菜单在根节点外，超出部分没有 proxy；现在把 fixed 根节点的可见子树并集纳入同一个 proxy。
 - 未完成：菜单自身关闭按钮未确认稳定（当前 orb 位置导致菜单顶部被裁）；半透明全屏遮罩、多弹层重叠和 proxy 顺序未测；长列表滚动因测试会话内容不足未验证；返回键关闭后同一会话内不能重新打开，需要离开重进。
 - 构建：arm64 `7be0c7660f881a575aa86fd970378c92611fa6b016ece52501346fdaf720eb31`。
+
+## 版本 0.2.0（2026-11-07）
+
+- `versionCode` 从 1 提升到 2，`versionName` 从 `0.1.0` 提升到 `0.2.0`；对应本轮消息 shell、global 变量、B1 live overlay 与菜单修复。
+- 全 ABI 重新构建：`app-arm64-v8a-debug.apk`、`app-armeabi-v7a-debug.apk`、`app-universal-debug.apk`、`app-x86-debug.apk`、`app-x86_64-debug.apk`。
+- `dist` 版本化文件改名为 `xujing-0.2.0-*`，源码包为 `xujing-0.2.0-source.zip`；旧 `xujing-0.1.0-*` 已移除。
+- 真机 `192.168.8.80:5555`（M2012K11AC，Android 13 / arm64）覆盖安装 arm64 包，`dumpsys package` 确认 `versionName=0.2.0`、`versionCode=2`。

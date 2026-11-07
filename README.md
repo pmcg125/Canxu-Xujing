@@ -2,7 +2,7 @@
 
 Android 优先的本地角色扮演应用。原生 Jetpack Compose Material 3 界面；使用用户自行配置的 OpenAI 兼容服务生成回复。
 
-项目路径：`D:\Canxu-project\Xujing`。当前版本：`0.1.0` 开发版。
+项目路径：`D:\Canxu-project\Xujing`。当前版本：`0.2.0` 开发版。
 
 本机 `dist` 目录提供 ARM64 开发 APK、通用开发 APK、其他架构分包、新项目源码归档与 SHA-256 校验清单。ARM64 包约 27.7 MiB，最低 Android 8.0。
 
