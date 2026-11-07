@@ -141,7 +141,7 @@
       XujingBridge.initialized(scriptId, '');
       return true;
     } catch (error) {
-      XujingBridge.initialized(scriptId, String(error?.message || error));
+      XujingBridge.initialized(scriptId, String(error?.stack || error?.message || error));
       return false;
     }
   };

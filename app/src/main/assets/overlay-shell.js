@@ -192,7 +192,7 @@ body{position:absolute;left:0;top:0;width:var(--xujing-screen-w);height:var(--xu
       buttons: Array.isArray(boot.scriptButtons) ? JSON.parse(JSON.stringify(boot.scriptButtons)) : [],
     };
     return '<!doctype html><html><head><meta charset="utf-8"><base href="https://cards.xujing.invalid/">' +
-      inlineScript(`window.__XUJING_CONTEXT__=${safe(runtimeContext)};window.__XUJING_SCRIPT__=${safe(metadata)};`) +
+      inlineScript(`window.$=window.jQuery=function(value){return{0:value,length:1,off:function(){return this},on:function(){return this},find:function(){return this},each:function(){return this}}};window.toastr=window.toastr||{info:function(){},success:function(){},error:function(){},warning:function(){}};window.errorCatched=function(fn){try{var r=fn();if(r&&typeof r.catch==='function')r.catch(function(e){console.error(e&&e.stack||e)});return r}catch(e){console.error(e&&e.stack||e)}};window.__XUJING_CONTEXT__=${safe(runtimeContext)};window.__XUJING_SCRIPT__=${safe(metadata)};`) +
       scriptTag('/runtime/zod.js') + scriptTag('/runtime/ejs.js') +
       scriptTag('/runtime/card-runtime.js') + scriptTag('/runtime/mvu.js') +
       scriptTag('/runtime/template.js') + scriptTag('/runtime/session-script-runtime.js') +

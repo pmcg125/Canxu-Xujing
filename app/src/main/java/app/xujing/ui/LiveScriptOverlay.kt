@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -238,10 +239,7 @@ internal fun LiveScriptOverlay(sessionId: String) {
         AndroidView(
             modifier = Modifier
                 .offset {
-                    IntOffset(
-                        (rect.x * density.density).roundToInt(),
-                        (rect.y * density.density).roundToInt(),
-                    )
+                    IntOffset(rect.x.roundToInt(), rect.y.roundToInt())
                 }
                 .size(
                     with(density) { rect.width.coerceAtLeast(1f).toDp() },
@@ -262,6 +260,12 @@ internal fun LiveScriptOverlay(sessionId: String) {
                 web.addJavascriptInterface(LiveSurfaceBridge(sessionId, main), "XujingLive")
                 web.addJavascriptInterface(LiveScriptBridge(sessionId, main) { web }, "XujingBridge")
                 web.webViewClient = liveClient()
+                web.webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
+                        Log.w("XujingLive", "console ${message.message()} @${message.lineNumber()}")
+                        return true
+                    }
+                }
                 web.tag = ""
                 holder[0] = web
                 LiveOverlayState.attach(web)
@@ -289,12 +293,13 @@ internal fun LiveScriptOverlay(sessionId: String) {
             },
         )
         if (LiveOverlayState.rect != null) {
-            val chipX = (rect.x + rect.width - 22f).coerceIn(0f, (screenWidth - 24f).coerceAtLeast(0f))
-            val chipY = (rect.y - 30f).coerceIn(0f, (screenHeight - 24f).coerceAtLeast(0f))
+            val chipSize = with(density) { 24.dp.toPx() }
+            val chipX = (rect.x + rect.width - chipSize).coerceIn(0f, (screenWidth - chipSize).coerceAtLeast(0f))
+            val chipY = (rect.y - chipSize - 8f).coerceIn(0f, (screenHeight - chipSize).coerceAtLeast(0f))
             ScriptCloseChip(
                 onClose = { LiveOverlayState.close() },
                 modifier = Modifier.offset {
-                    IntOffset((chipX * density.density).roundToInt(), (chipY * density.density).roundToInt())
+                    IntOffset(chipX.roundToInt(), chipY.roundToInt())
                 },
             )
         }
