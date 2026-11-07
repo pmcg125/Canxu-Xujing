@@ -382,12 +382,12 @@ internal fun LiveScriptOverlay(sessionId: String) {
         LiveOverlayState.visible &&
         LiveOverlayState.scriptContent.isNotBlank()
 
-    // Full-screen device pixels, matching the shell's coordinate space. Prefer the laid-out Compose
-    // view (edge-to-edge content size) and fall back to the configuration while it is still 0.
-    val configuredWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
-    val configuredHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
-    val screenWidth = if (composeView.width > 0) composeView.width.toFloat() else configuredWidth
-    val screenHeight = if (composeView.height > 0) composeView.height.toFloat() else configuredHeight
+    // Shell/CSS pixels, not device pixels: the WebView uses meta viewport width=device-width.
+    // The host converts each touchRects entry to device pixels when creating FrameLayout proxies.
+    val configuredWidth = configuration.screenWidthDp.toFloat()
+    val configuredHeight = configuration.screenHeightDp.toFloat()
+    val screenWidth = if (composeView.width > 0) composeView.width / density.density else configuredWidth
+    val screenHeight = if (composeView.height > 0) composeView.height / density.density else configuredHeight
 
     DisposableEffect(sessionId, active) {
         if (active) {

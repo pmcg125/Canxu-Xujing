@@ -97,8 +97,10 @@ internal class TouchProxyHost(private val web: TouchThroughWebView) {
         proxies.clear()
         for (rect in rects) {
             if (rect.width < 1f || rect.height < 1f) continue
-            val width = rect.width.roundToInt().coerceAtLeast(1)
-            val height = rect.height.roundToInt().coerceAtLeast(1)
+            // shell touchRects are CSS pixels; FrameLayout works in device pixels.
+            val scale = parent.resources.displayMetrics.density
+            val width = (rect.width * scale).roundToInt().coerceAtLeast(1)
+            val height = (rect.height * scale).roundToInt().coerceAtLeast(1)
             val proxy = View(parent.context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 isClickable = true
@@ -107,8 +109,8 @@ internal class TouchProxyHost(private val web: TouchThroughWebView) {
                 setOnTouchListener { view, event -> forward(view, event) }
             }
             val params = FrameLayout.LayoutParams(width, height).apply {
-                leftMargin = rect.x.roundToInt().coerceAtLeast(0)
-                topMargin = rect.y.roundToInt().coerceAtLeast(0)
+                leftMargin = (rect.x * scale).roundToInt().coerceAtLeast(0)
+                topMargin = (rect.y * scale).roundToInt().coerceAtLeast(0)
             }
             // Later rects are added later and therefore sit above earlier ones (last wins).
             parent.addView(proxy, params)
