@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import app.xujing.core.*
 import kotlinx.serialization.encodeToString
 import java.io.ByteArrayInputStream
@@ -23,10 +24,14 @@ class SecretVault(context: Context) {
     private val prefs = context.getSharedPreferences("connection-secrets", Context.MODE_PRIVATE)
     private val key: SecretKey by lazy {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey("xujing-local-v1", null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
+        val existing = store.getKey("xujing-local-v1", null) as? SecretKey
+        if (existing == null) {
+            Log.w("XujingStore", "AndroidKeyStore 缺少 xujing-local-v1，正在生成新密钥；已有本地资料将无法解密")
+            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
             init(KeyGenParameterSpec.Builder("xujing-local-v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
+        } else existing
     }
     fun seal(bytes: ByteArray): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
@@ -43,6 +48,17 @@ class SecretVault(context: Context) {
     fun put(id: String, value: String) { prefs.edit().putString(id, Base64.encodeToString(seal(value.toByteArray()), Base64.NO_WRAP)).apply() }
     fun get(id: String): String = prefs.getString(id, null)?.let { open(Base64.decode(it, Base64.NO_WRAP)).toString(Charsets.UTF_8) } ?: ""
     fun delete(id: String) { prefs.edit().remove(id).apply() }
+    /** 诊断只读：当前 Keystore 密钥能解开多少条已保存的加密条目。用于区分“密钥丢失/更换”和“数据库文件来自其他安装”。 */
+    fun check(): String {
+        val entries = prefs.all.filterValues { it is String }
+        if (entries.isEmpty()) return "无加密条目"
+        var ok = 0
+        entries.forEach { (id, value) ->
+            try { open(Base64.decode(value as String, Base64.NO_WRAP)); ok++ }
+            catch (e: Exception) { Log.e("XujingStore", "prefs 条目 $id 无法解密", e) }
+        }
+        return "可解密 $ok/${entries.size}"
+    }
 }
 
 /** Per-record encrypted SQLite persistence. Records are gzipped and split into 1 MiB chunks. */
@@ -142,25 +158,38 @@ class AppStore(context: Context, private val vault: SecretVault) : SQLiteOpenHel
     }
 
     @Synchronized fun load(): AppState? {
-        val rows = mutableMapOf<String, MutableList<Pair<String, String>>>()
-        val keys = mutableListOf<Pair<String, String>>()
-        readableDatabase.rawQuery("SELECT kind,id FROM records WHERE chunk=0 ORDER BY sequence", null).use { c ->
-            while(c.moveToNext()) keys += c.getString(0) to c.getString(1)
+        var stage = "打开数据库"
+        try {
+            val rows = mutableMapOf<String, MutableList<Pair<String, String>>>()
+            val keys = mutableListOf<Pair<String, String>>()
+            readableDatabase.rawQuery("SELECT kind,id FROM records WHERE chunk=0 ORDER BY sequence", null).use { c ->
+                while(c.moveToNext()) keys += c.getString(0) to c.getString(1)
+            }
+            val db = readableDatabase
+            for ((kind, id) in keys) {
+                stage = "读取 $kind/$id"
+                val raw = readRecord(db, kind, id)
+                stage = "解密 $kind/$id"
+                val plain = vault.open(raw)
+                stage = "解压 $kind/$id"
+                val text = gunzip(plain).toString(Charsets.UTF_8)
+                cache["$kind/$id"] = text
+                rows.getOrPut(kind) { mutableListOf() }.add(id to text)
+            }
+            stage = "解析 state/main"
+            val metadata = rows["state"]?.firstOrNull()?.second ?: return null
+            val base = AppJson.decodeFromString<AppState>(metadata)
+            stage = "解析 role/session/message/library"
+            val messages = rows["message"].orEmpty().map { AppJson.decodeFromString<StoredMessage>(it.second) }.groupBy { it.sessionId }
+            return base.copy(
+                roles = rows["role"].orEmpty().map { AppJson.decodeFromString<RoleCard>(it.second) },
+                sessions = rows["session"].orEmpty().map { AppJson.decodeFromString<ChatSession>(it.second) }.map { it.copy(messages = messages[it.id].orEmpty().sortedBy { m -> m.sequence }.map { m -> m.message }) },
+                library = rows["library"].orEmpty().map { AppJson.decodeFromString<LibraryDocument>(it.second) },
+            )
+        } catch (e: Exception) {
+            Log.e("XujingStore", "读取本地资料失败（阶段：$stage）", e)
+            throw IllegalStateException("$stage（${e.javaClass.simpleName}${e.message?.let { "：$it" } ?: ""}）", e)
         }
-        val db = readableDatabase
-        for ((kind, id) in keys) {
-            val text = gunzip(vault.open(readRecord(db, kind, id))).toString(Charsets.UTF_8)
-            cache["$kind/$id"] = text
-            rows.getOrPut(kind) { mutableListOf() }.add(id to text)
-        }
-        val metadata = rows["state"]?.firstOrNull()?.second ?: return null
-        val base = AppJson.decodeFromString<AppState>(metadata)
-        val messages = rows["message"].orEmpty().map { AppJson.decodeFromString<StoredMessage>(it.second) }.groupBy { it.sessionId }
-        return base.copy(
-            roles = rows["role"].orEmpty().map { AppJson.decodeFromString<RoleCard>(it.second) },
-            sessions = rows["session"].orEmpty().map { AppJson.decodeFromString<ChatSession>(it.second) }.map { it.copy(messages = messages[it.id].orEmpty().sortedBy { m -> m.sequence }.map { m -> m.message }) },
-            library = rows["library"].orEmpty().map { AppJson.decodeFromString<LibraryDocument>(it.second) },
-        )
     }
     @Synchronized fun save(state: AppState) {
         val records = linkedMapOf<String, Record>()

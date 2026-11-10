@@ -30,7 +30,7 @@ internal fun RoleEditor(role: RoleCard, onClose: () -> Unit, onSave: (RoleCard) 
     var advanced by remember { mutableStateOf(false) }
     val parsedRaw = remember(raw) { runCatching { AppJson.parseToJsonElement(raw) as JsonObject } }
     val hugeRaw = raw.length > 200_000
-    EditorScaffold("编辑角色", onClose, onSave = { onSave(draft.copy(raw = parsedRaw.getOrThrow())) }, enabled = draft.name.isNotBlank() && parsedRaw.isSuccess) {
+    EditorScaffold("编辑角色", onClose, onSave = { onSave(draft.copy(raw = parsedRaw.getOrThrow())) }, enabled = draft.name.isNotBlank() && parsedRaw.isSuccess, dirty = draft != role || parsedRaw.getOrNull() != role.raw) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) { Avatar(draft.name, draft.avatarPath); Text("角色设定将参与提示词编排。导入角色卡中的额外字段会保留。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         OutlinedTextField(draft.name, { draft = draft.copy(name = it) }, label = { Text("角色名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         EditorText("角色描述", draft.description) { draft = draft.copy(description = it) }
@@ -85,7 +85,7 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
     var json by remember(document.id) { mutableStateOf(AppJson.encodeToString(JsonElement.serializer(), document.data)) }
     val huge = json.length > 200_000
     val parsed = remember(json) { runCatching { AppJson.parseToJsonElement(json) } }
-    EditorScaffold("编辑${kindName(kind)}", onClose, onSave = { onSave(document.copy(name = name.trim(), kind = kind, enabled = enabled, data = parsed.getOrThrow())) }, enabled = name.isNotBlank() && parsed.isSuccess) {
+    EditorScaffold("编辑${kindName(kind)}", onClose, onSave = { onSave(document.copy(name = name.trim(), kind = kind, enabled = enabled, data = parsed.getOrThrow())) }, enabled = name.isNotBlank() && parsed.isSuccess, dirty = name != document.name || kind != document.kind || enabled != document.enabled || parsed.getOrNull() != document.data) {
         OutlinedTextField(name, { name = it }, label = { Text("资料名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         ChoiceField("资料类型", kind, libraryKinds, onChoose = { kind = it ?: kind })
         SettingSwitch("启用资料", "还需要在会话设置中选择要使用的世界书、预设或正则。", enabled, { enabled = it })
@@ -150,7 +150,7 @@ internal fun ConnectionEditor(connection: ApiConnection, runtime: UiRuntime, act
     val parsedParameters = remember(parameters) { runCatching { AppJson.parseToJsonElement(parameters) as JsonObject } }
     val validUrl = remember(draft.baseUrl) { runCatching { URI(draft.baseUrl).let { it.scheme in listOf("http", "https") && !it.host.isNullOrBlank() } }.getOrDefault(false) }
     val valid = draft.name.isNotBlank() && validUrl && draft.model.isNotBlank() && parsedHeaders.isSuccess && parsedParameters.isSuccess && (context.toIntOrNull() ?: 0) > 0
-    EditorScaffold("API 连接", onClose, onSave = { onSave(draft.copy(name = draft.name.trim(), baseUrl = draft.baseUrl.trim(), model = draft.model.trim(), headers = parsedHeaders.getOrThrow(), parameters = parsedParameters.getOrThrow(), contextTokens = context.toInt()), if (keyChanged) key else null) }, enabled = valid) {
+    EditorScaffold("API 连接", onClose, onSave = { onSave(draft.copy(name = draft.name.trim(), baseUrl = draft.baseUrl.trim(), model = draft.model.trim(), headers = parsedHeaders.getOrThrow(), parameters = parsedParameters.getOrThrow(), contextTokens = context.toInt()), if (keyChanged) key else null) }, enabled = valid, dirty = draft != connection || keyChanged || parsedHeaders.getOrNull() != connection.headers || parsedParameters.getOrNull() != connection.parameters || context != connection.contextTokens.toString()) {
         Text("适用于 OpenAI 兼容服务。请按服务商说明填写 URL、模型名称及请求头。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("常用服务商", style = MaterialTheme.typography.labelMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
@@ -176,6 +176,7 @@ internal fun ConnectionEditor(connection: ApiConnection, runtime: UiRuntime, act
             supportingText = { Text(if (!keyChanged) "不修改此项将保留已保存的密钥。" else if (key.isEmpty()) "保存后会清除已保存的密钥。" else "保存后替换此连接的密钥。") })
         TextButton(onClick = { key = ""; keyChanged = true }) { Text("清除已保存的密钥") }
         SettingSwitch("流式生成", "逐步显示模型回复。", draft.stream) { draft = draft.copy(stream = it) }
+        SettingSwitch("支持视觉输入", "为多模态模型开启后，聊天可附加图片并随消息发送；纯文本模型请保持关闭。", draft.supportsVision) { draft = draft.copy(supportsVision = it) }
         OutlinedTextField(context, { context = it.filter(Char::isDigit) }, label = { Text("上下文预算（tokens）") }, supportingText = { Text("用于提示词裁剪，请按模型实际窗口设置。") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
         SectionTitle("自定义请求头", "JSON 对象，值为字符串。需要时可填写服务商特定的认证头。")
         OutlinedTextField(headers, { headers = it }, modifier = Modifier.fillMaxWidth(), minLines = 4, textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), isError = parsedHeaders.isFailure, supportingText = { if (parsedHeaders.isFailure) Text("请求头必须是字符串值组成的 JSON 对象") })

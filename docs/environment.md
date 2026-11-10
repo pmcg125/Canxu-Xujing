@@ -55,7 +55,7 @@ powershell -NoProfile -File D:\Canxu-project\Xujing\build.ps1 :app:assembleDebug
   2. 关掉模拟器，或结束 Kotlin 守护进程（`javac` 参数的 java 进程，约 700 MB）
   3. 确认可用内存后重试一次
 - 产物：`app\build\outputs\apk\debug\app-<abi>-debug.apk` 与 `app-universal-debug.apk`。
-- 发布目录：`dist\`，含各 ABI 包、`xujing-0.2.0-source.zip`、`SHA256SUMS.txt`。
+- 发布目录：`dist\`，含各 ABI 包、`xujing-0.2.1-source.zip`、`SHA256SUMS.txt`。
 
 ## 4. 测试设备
 

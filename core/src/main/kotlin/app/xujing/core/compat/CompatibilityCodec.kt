@@ -276,7 +276,12 @@ object CompatibilityCodec {
         if (obj?.containsKey("xujing_session") == true && (requested == "auto" || requested == "chat")) {
             val session = AppJson.decodeFromJsonElement<ChatSession>(obj.getValue("xujing_session"))
             val history = obj["history"] as? JsonArray
-            return ImportBundle(sessions = listOf(session.copy(messages = history?.mapIndexed { i, value -> messageFrom(value.jsonObject, i) } ?: session.messages)))
+            val messages = history?.mapIndexed { i, value ->
+                val message = messageFrom(value.jsonObject, i)
+                // Older chat exports may carry the image only in the extension copy.
+                if (message.image.isNotEmpty()) message else message.copy(image = session.messages.getOrNull(i)?.image.orEmpty())
+            } ?: session.messages
+            return ImportBundle(sessions = listOf(session.copy(messages = messages)))
         }
         val kind = if (requested == "auto") detectKind(fileName, parsed) else requested
         return when (kind) {
@@ -359,7 +364,8 @@ object CompatibilityCodec {
             name = raw.text("speakerName", raw.text("name", raw.text("author"))).ifBlank { null },
             speakerId = raw.text("speakerId", raw.text("speaker_id")).ifBlank { null },
             createdAt = raw.long("timestamp", raw.long("createdAt", System.currentTimeMillis() + index)),
-            swipes = swipes, swipeIndex = swipeIndex.coerceAtMost(maxOf(0, swipes.lastIndex)), variables = snapshot, extra = raw,
+            swipes = swipes, swipeIndex = swipeIndex.coerceAtMost(maxOf(0, swipes.lastIndex)), variables = snapshot,
+            extra = raw, image = raw.text("image"),
         )
     }
 
@@ -528,6 +534,8 @@ object CompatibilityCodec {
             put("swipes", JsonArray(message.swipes.map(::JsonPrimitive))); put("swipe_id", JsonPrimitive(message.swipeIndex))
         }
         if (message.variables.isNotEmpty()) put("variables", message.variables)
+        // PiuPiu keeps one image string per message (base64 / file reference / remote URL).
+        if (message.image.isNotEmpty()) put("image", JsonPrimitive(message.image))
     })
 
     private fun exportSession(session: ChatSession, roleId: Long, id: Long): JsonObject = JsonObject(session.extra.toMutableMap().apply {

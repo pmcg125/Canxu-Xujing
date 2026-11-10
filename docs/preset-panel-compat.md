@@ -388,6 +388,10 @@ powershell -NoProfile -File D:\Canxu-project\Xujing\build.ps1 :app:assembleDebug
 
 ## 9. 排查
 
+### 启动提示读取本地资料失败
+
+`AEADBadTagException`、密钥自检失败或 KeyStore 别名异常时，先查看 [本地资料加密与恢复](local-data-encryption.md)，不要清除应用数据。
+
 ### 菜单点不了
 
 1. 确认安装的是 0.2.0 且包含菜单并集修复。

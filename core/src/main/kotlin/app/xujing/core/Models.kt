@@ -32,7 +32,7 @@ val EmptyObject get() = JsonObject(emptyMap())
     val id: String = newId(), val role: String = "user", val content: String = "",
     val name: String? = null, val speakerId: String? = null, val createdAt: Long = System.currentTimeMillis(),
     val swipes: List<String> = emptyList(), val swipeIndex: Int = 0,
-    val variables: JsonObject = EmptyObject, val extra: JsonObject = EmptyObject,
+    val variables: JsonObject = EmptyObject, val extra: JsonObject = EmptyObject, val image: String = "",
 )
 @Serializable data class ChatSession(
     val id: String = newId(), val title: String = "新会话", val roleIds: List<String> = emptyList(),
@@ -52,7 +52,7 @@ val EmptyObject get() = JsonObject(emptyMap())
     val id: String = newId(), val name: String = "自定义连接", val baseUrl: String = "",
     val model: String = "", val headers: Map<String, String> = emptyMap(),
     val parameters: JsonObject = buildJsonObject { put("temperature", 1.0); put("max_tokens", 2048) },
-    val contextTokens: Int = 16384, val stream: Boolean = true,
+    val contextTokens: Int = 16384, val stream: Boolean = true, val supportsVision: Boolean = false,
 )
 @Serializable data class EmbeddingSettings(
     val provider: String = "local", val localModelId: String? = null,
@@ -60,9 +60,9 @@ val EmptyObject get() = JsonObject(emptyMap())
     val threshold: Double = 0.35, val chunkChars: Int = 800,
 )
 @Serializable data class UiPreferences(
-    val darkMode: String = "system", val dynamicColor: Boolean = true, val fontSize: Float = 17f,
+    val darkMode: String = "system", val dynamicColor: Boolean = false, val fontSize: Float = 17f,
     val defaultConnectionId: String? = null, val userName: String = "我", val persona: String = "",
-    val allowCardScripts: Boolean = false,
+    val allowCardScripts: Boolean = false, val userAvatarPath: String? = null,
 )
 @Serializable data class AppState(
     val schemaVersion: Int = 1, val roles: List<RoleCard> = emptyList(),
@@ -70,7 +70,7 @@ val EmptyObject get() = JsonObject(emptyMap())
     val connections: List<ApiConnection> = emptyList(), val preferences: UiPreferences = UiPreferences(),
     val embedding: EmbeddingSettings = EmbeddingSettings(), val compatibility: JsonObject = EmptyObject,
 )
-@Serializable data class PromptMessage(val role: String, val content: String, val name: String? = null)
+@Serializable data class PromptMessage(val role: String, val content: String, val name: String? = null, val images: List<String> = emptyList())
 data class PromptBuild(
     val messages: List<PromptMessage>, val activatedEntries: List<String> = emptyList(),
     val diagnostics: List<String> = emptyList(), val worldState: JsonObject = EmptyObject,

@@ -11,7 +11,7 @@ import app.xujing.core.*
 import kotlinx.serialization.json.*
 
 @Composable
-internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit,onSave:(ChatSession)->Unit,onModels:()->Unit) {
+internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit,onSave:(ChatSession)->Unit,onModels:()->Unit, visible: Boolean = true) {
     var draft by remember(session.id) { mutableStateOf(session) }
     var variables by remember(session.id) { mutableStateOf(AppJson.encodeToString(JsonObject.serializer(),session.variables)) }
     var history by remember(session.id) { mutableStateOf(session.extra["maxHistoryMessages"]?.jsonPrimitive?.intOrNull?.toString() ?: "40") }
@@ -35,6 +35,10 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
     val selectedStyles=draft.extra.array("styleIds").map { it.jsonPrimitive.content }
     val selectedPersona=draft.extra.text("personaId").ifBlank { null }
     val worldInfoValid=numberFieldValid(scanDepthText,worldInfoOriginal,"scanDepth",0..1000) && numberFieldValid(maxScanDepthText,worldInfoOriginal,"maxScanDepth",0..1000) && numberFieldValid(minActivationsText,worldInfoOriginal,"minActivations",0..1000) && numberFieldValid(maxRecursionStepsText,worldInfoOriginal,"maxRecursionSteps",0..32) && numberFieldValid(budgetPercentText,worldInfoOriginal,"budgetPercent",0..100,decimal=true) && numberFieldValid(budgetCapText,worldInfoOriginal,"budgetCap",0..1000000)
+    val fields = listOf(variables, history, memoryQuery, summaryInterval, summaryKeep, fontSize)
+    val originalFields = remember(session.id) { fields }
+    val originalSession = remember(session.id) { session }
+    if (!visible) return
     EditorScaffold("会话设置",onClose,onSave={
         val worldInfoExtra=worldInfoMerge(draft.extra,worldInfoEdited.keys,mapOf<String,String?>(
             "scanDepth" to scanDepthText,"maxScanDepth" to maxScanDepthText,"minActivations" to minActivationsText,
@@ -42,7 +46,7 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             "recursive" to recursiveText,"useGroupScoring" to groupScoringText,
         ))
         onSave(draft.copy(variables=parsedVariables.getOrThrow(),extra=JsonObject(draft.extra+mapOf<String,JsonElement>("maxHistoryMessages" to JsonPrimitive(history.toInt()),"memoryQueryMessages" to JsonPrimitive(memoryQuery.toInt()),"fontSize" to JsonPrimitive(fontSize),"summaryInterval" to JsonPrimitive(summaryInterval.toInt()),"summaryKeepMessages" to JsonPrimitive(summaryKeep.toInt()))+worldInfoExtra)))
-    },enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (memoryQuery.toIntOrNull() ?: 0) in 1..30 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000 && worldInfoValid && (worldInfoWritable || worldInfoEdited.isEmpty())) {
+    },dirty=draft != originalSession || fields != originalFields || worldInfoEdited.isNotEmpty(),enabled=draft.title.isNotBlank() && draft.roleIds.isNotEmpty() && parsedVariables.isSuccess && (history.toIntOrNull() ?: 0) in 1..10000 && (memoryQuery.toIntOrNull() ?: 0) in 1..30 && (summaryInterval.toIntOrNull() ?: 0) in 1..1000 && (summaryKeep.toIntOrNull() ?: 0) in 2..1000 && worldInfoValid && (worldInfoWritable || worldInfoEdited.isEmpty())) {
         OutlinedTextField(draft.title,{ draft=draft.copy(title=it) },label={ Text("会话名称") },singleLine=true,modifier=Modifier.fillMaxWidth())
         CollapsibleSection("参与角色", initiallyExpanded = true) {
             if(state.roles.isEmpty()) Text("请先创建或导入角色。")
@@ -64,7 +68,7 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             }
             EditorText("本会话的人设",draft.persona,4) { draft=draft.copy(persona=it) }
         }
-        CollapsibleSection("提示词资料") {
+        CollapsibleSection("会话脚本") {
             SettingSwitch("运行角色独立脚本","为此会话加载角色卡中的 TavernHelper 脚本；同时需要在全局设置允许角色卡脚本。",(draft.extra["sessionScriptsEnabled"] as? JsonPrimitive)?.booleanOrNull==true) {
                 draft=draft.copy(extra=JsonObject(draft.extra+("sessionScriptsEnabled" to JsonPrimitive(it))))
             }
@@ -84,6 +88,8 @@ internal fun SessionSettings(session:ChatSession,state:AppState,onClose:()->Unit
             SettingSwitch("预设 live 悬浮层（实验）","让使用 parent.document 的预设脚本在可见覆盖层中运行；仅对当前会话生效，默认关闭。",(draft.extra["liveOverlayEnabled"] as? JsonPrimitive)?.booleanOrNull==true) {
                 draft=draft.copy(extra=JsonObject(draft.extra+("liveOverlayEnabled" to JsonPrimitive(it))))
             }
+        }
+        CollapsibleSection("提示词资料") {
             ChoiceField("提示词预设",draft.presetId,state.library.filter { it.kind=="preset" && it.enabled }.map { it.id to it.name },"使用默认编排") { draft=draft.copy(presetId=it) }
             SettingSwitch("使用预设采样参数","启用后，预设中的温度、top_p、惩罚、输出上限等有效参数会覆盖聊天连接参数；摘要仍使用摘要连接参数。",(draft.extra["applyPresetSampling"] as? JsonPrimitive)?.booleanOrNull==true) {
                 draft=draft.copy(extra=JsonObject(draft.extra+("applyPresetSampling" to JsonPrimitive(it))))

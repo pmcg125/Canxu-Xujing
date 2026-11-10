@@ -119,8 +119,23 @@ class Handler(BaseHTTPRequestHandler):
         for i, message in enumerate(messages):
             if not isinstance(message, dict) or message.get("role") not in ("system", "developer", "user", "assistant", "tool"):
                 return f"messages[{i}].role is invalid"
-            if not isinstance(message.get("content"), str):
-                return f"messages[{i}].content must be a string"
+            content = message.get("content")
+            if not isinstance(content, str):
+                if not isinstance(content, list) or not content:
+                    return f"messages[{i}].content must be a string or a non-empty content-part array"
+                for j, part in enumerate(content):
+                    if not isinstance(part, dict):
+                        return f"messages[{i}].content[{j}] is invalid"
+                    kind = part.get("type")
+                    if kind == "text":
+                        if not isinstance(part.get("text"), str):
+                            return f"messages[{i}].content[{j}].text must be a string"
+                    elif kind == "image_url":
+                        image = part.get("image_url")
+                        if not isinstance(image, dict) or not isinstance(image.get("url"), str):
+                            return f"messages[{i}].content[{j}].image_url.url must be a string"
+                    else:
+                        return f"messages[{i}].content[{j}].type is invalid"
         if "stream" in value and not isinstance(value["stream"], bool):
             return "stream must be a boolean"
         return None

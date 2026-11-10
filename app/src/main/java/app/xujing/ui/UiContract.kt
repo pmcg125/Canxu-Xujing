@@ -18,21 +18,39 @@ data class UiRuntime(
     val modelOptionsConnectionId: String? = null, val modelFetchVersion: Int = 0,
     val openLibraryKind: String? = null, val scriptPanel: ScriptPanel? = null,
     val streamingMessageId: String? = null, val inputDraft: String? = null,
+    val inputDraftSessionId: String? = null,
+    val composerDrafts: Map<String, ComposerDraft> = emptyMap(),
+    val generationStage: GenerationStage? = null,
+    val importResult: String? = null,
+    val restoringSessionId: String? = null,
+    val pendingAttachment: PendingAttachment? = null,
 )
+
+data class ComposerDraft(val text: String = "", val revision: Long = 0L)
+
+data class PendingAttachment(val sessionId: String, val displayName: String, val mediaPath: String)
+
+enum class GenerationPhase { SAVING_MESSAGE, PREPARING, WAITING, RECEIVING, FINALIZING }
+
+data class GenerationStage(val sessionId: String, val phase: GenerationPhase)
+
 interface AppActions {
     fun openSession(id: String?)
     fun createSession(roleIds: List<String>)
-    fun updateSession(session: ChatSession)
+    fun updateSession(session: ChatSession, onSaved: (() -> Unit)? = null)
     fun deleteSession(id: String)
-    fun saveRole(role: RoleCard)
+    fun saveRole(role: RoleCard, onSaved: (() -> Unit)? = null)
     fun deleteRole(id: String)
-    fun saveLibrary(document: LibraryDocument)
+    fun saveLibrary(document: LibraryDocument, onSaved: (() -> Unit)? = null)
     fun deleteLibrary(id: String)
-    fun saveConnection(connection: ApiConnection, apiKey: String?)
+    fun saveConnection(connection: ApiConnection, apiKey: String?, onSaved: (() -> Unit)? = null)
     fun deleteConnection(id: String)
     fun savePreferences(preferences: UiPreferences)
     fun saveEmbedding(settings: EmbeddingSettings)
     fun send(text: String, targetRoleId: String? = null)
+    fun updateComposerDraft(sessionId: String, text: String)
+    fun sendFromComposer(sessionId: String, text: String, targetRoleId: String? = null)
+    fun retryReply(sessionId: String, fallbackTargetRoleId: String? = null)
     fun stop()
     fun regenerate()
     fun continueReply()
@@ -48,6 +66,7 @@ interface AppActions {
     fun deleteModel(id: String)
     fun rebuildMemory()
     fun showPrompt()
+    fun clearImportResult()
     fun clearError()
     fun clearPrompt()
     fun suggestReplies()
@@ -57,4 +76,5 @@ interface AppActions {
     fun clearScriptPanel()
     /** Clear the draft a card script pushed into the chat input. */
     fun consumeInputDraft()
+    fun clearPendingAttachment()
 }

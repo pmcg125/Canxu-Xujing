@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.xujing.core.*
 
@@ -50,6 +51,31 @@ internal fun EmptyState(icon: ImageVector, title: String, description: String, a
         Spacer(Modifier.height(8.dp))
         Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         if (action != null && onAction != null) { Spacer(Modifier.height(20.dp)); FilledTonalButton(onClick = onAction) { Text(action) } }
+    }
+}
+
+/** "继续上次" primary-container card shown on the stories home and the desktop welcome pane. */
+@Composable
+internal fun ResumeStoryCard(session: ChatSession, role: RoleCard?, restoring: Boolean = false, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(role?.name ?: session.title, role?.avatarPath)
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text("继续上次", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f))
+                Text(session.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (restoring) "正在恢复剧情变量…" else plainPreview(session.messages.lastOrNull()?.content ?: "故事尚未开始"),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(Icons.Outlined.PlayArrow, "继续", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
     }
 }
 
@@ -118,9 +144,18 @@ internal fun ConfirmDelete(name: String, description: String = "此操作无法�
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun EditorScaffold(title: String, onClose: () -> Unit, onSave: () -> Unit, enabled: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+internal fun EditorScaffold(title: String, onClose: () -> Unit, onSave: () -> Unit, enabled: Boolean = true, dirty: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+    var discard by remember { mutableStateOf(false) }
+    val close = { if (dirty) discard = true else onClose() }
+    androidx.activity.compose.BackHandler(onBack = close)
+    if (discard) AlertDialog(
+        onDismissRequest = { discard = false },
+        title = { Text("放弃未保存的修改？") },
+        confirmButton = { TextButton(onClick = onClose) { Text("放弃修改") } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text("继续编辑") } },
+    )
     Scaffold(topBar = {
-        TopAppBar(title = { Text(title) }, navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
+        TopAppBar(title = { Text(title) }, navigationIcon = { IconButton(onClick = close) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
             actions = { TextButton(onClick = onSave, enabled = enabled) { Text("保存") } })
     }) { padding -> Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content) }
 }

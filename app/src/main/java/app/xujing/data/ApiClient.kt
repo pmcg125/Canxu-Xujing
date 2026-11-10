@@ -59,7 +59,7 @@ class ApiClient(private val secrets: SecretVault) {
             connection.parameters.forEach { (k,v) -> put(k,v) }
             put("model",connection.model)
             put("messages",JsonArray(messages.map { message -> buildJsonObject {
-                put("role",message.role); put("content",message.content); message.name?.takeIf(String::isNotBlank)?.let { put("name",it) }
+                put("role",message.role); put("content",contentOf(message)); message.name?.takeIf(String::isNotBlank)?.let { put("name",it) }
             } }))
             put("stream",connection.stream)
         }
@@ -115,6 +115,14 @@ class ApiClient(private val secrets: SecretVault) {
                 .map { it.jsonObject }.sortedBy { it["index"]?.jsonPrimitive?.intOrNull ?: 0 }
             require(data.size==texts.size) { "向量响应数量与请求不一致" }
             data.map { item -> item.array("embedding").map { it.jsonPrimitive.float }.toFloatArray().also { require(it.isNotEmpty() && it.all(Float::isFinite)) { "向量响应无效" } } }
+        }
+    }
+    private fun contentOf(message:PromptMessage):JsonElement {
+        val images=message.images.map(String::trim).filter(String::isNotEmpty)
+        if(images.isEmpty()) return JsonPrimitive(message.content)
+        return buildJsonArray {
+            if(message.content.isNotBlank()) add(buildJsonObject { put("type","text"); put("text",message.content) })
+            images.forEach { url -> add(buildJsonObject { put("type","image_url"); put("image_url",buildJsonObject { put("url",url) }) }) }
         }
     }
     private fun content(element:JsonElement?):String = when(element) {

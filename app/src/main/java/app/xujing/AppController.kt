@@ -61,7 +61,13 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 storageReady=true
                 _runtime.update { it.copy(busy=false,localModels=embeddings.installed()) }
                 persist()
-            } catch(e:Exception) { _runtime.update { it.copy(busy=false,error="读取本地资料失败，为保护原数据暂不写入：${e.message}") } }
+            } catch(e:Exception) {
+                android.util.Log.e("XujingController", "读取本地资料失败", e)
+                android.util.Log.e("XujingController", "密钥自检：" + runCatching { vault.check() }.getOrElse { "自检异常 ${it.javaClass.simpleName}" })
+                val tagMismatch = generateSequence(e as Throwable) { it.cause }.any { it is javax.crypto.AEADBadTagException }
+                val hint = if (tagMismatch) "；本地密钥与数据不匹配，可能由系统密钥库被重置或 keymaster 模块接管导致。请不要清除应用数据，先排查密钥库环境" else ""
+                _runtime.update { it.copy(busy=false,error="读取本地资料失败，为保护原数据暂不写入：${e.message ?: e.javaClass.simpleName}$hint") }
+            }
         }
         CardRuntimeHost.handler={sessionId,runtimeToken,method,payload,reply ->
             viewModelScope.launch { try {
@@ -79,9 +85,9 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         return AppState(roles=listOf(role))
     }
     private fun error(e:Throwable) { if(e !is CancellationException) _runtime.update { it.copy(error=e.message ?: "操作失败") } }
-    private fun change(block:(AppState)->AppState) {
+    private fun change(onSaved: (() -> Unit)? = null, block:(AppState)->AppState) {
         if(!storageReady) return
-        _state.update(block); viewModelScope.launch { persist() }
+        _state.update(block); viewModelScope.launch { if (persist()) onSaved?.invoke() }
     }
     private suspend fun persist():Boolean {
         if(!storageReady) return false
@@ -293,15 +299,31 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         }
     }
     private fun active():ChatSession?=state.value.sessions.find { it.id==runtime.value.activeSessionId }
-    private fun mutateSession(id:String,persist:Boolean=true,block:(ChatSession)->ChatSession) {
-        _state.update { s -> s.copy(sessions=s.sessions.map { if(it.id==id) block(it).copy(updatedAt=System.currentTimeMillis()) else it }) }
-        if(persist) viewModelScope.launch { persist() }
+    private fun updateGenerationStage(sessionId:String,phase:GenerationPhase,status:String?=null) {
+        _runtime.update { current ->
+            if(current.generationStage?.sessionId?.let { it!=sessionId }==true) current
+            else current.copy(generationStage=GenerationStage(sessionId,phase),status=status ?: current.status)
+        }
     }
+    private fun mutateSession(id:String,persist:Boolean=true,onSaved:(()->Unit)?=null,block:(ChatSession)->ChatSession) {
+        _state.update { s -> s.copy(sessions=s.sessions.map { if(it.id==id) block(it).copy(updatedAt=System.currentTimeMillis()) else it }) }
+        if(persist) viewModelScope.launch { if (persist()) onSaved?.invoke() }
+    }
+    private var sessionOpenVersion = 0L
+
     override fun openSession(id:String?) {
+        val version = ++sessionOpenVersion
         if(id!=runtime.value.activeSessionId) pendingSend?.cancel()
         clearSuggestions()
+        // An unsent attachment belongs to the session that picked it.
+        runtime.value.pendingAttachment?.takeIf { it.sessionId!=id }?.let { stale ->
+            _runtime.update { it.copy(pendingAttachment=null) }
+            viewModelScope.launch(Dispatchers.IO) {
+                if(!runtime.value.generating && pendingSend==null) deleteUnreferencedChatMedia(listOf(stale.mediaPath))
+            }
+        }
         // A panel belongs to the session that requested it; never leak it across sessions.
-        _runtime.update { it.copy(scriptPanel=null) }
+        _runtime.update { it.copy(scriptPanel=null,restoringSessionId=null) }
         if(id==null) { _runtime.update { it.copy(activeSessionId=null) }; return }
         val snapshot=state.value.sessions.firstOrNull { it.id==id } ?: return
         if(runtime.value.generating || !PromptEngine.needsMvuReplay(snapshot) || !PromptEngine.hasMvuState(state.value,snapshot)) {
@@ -311,8 +333,13 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             return
         }
         viewModelScope.launch {
-            _runtime.update { it.copy(status="正在恢复剧情变量…") }
+            _runtime.update { it.copy(restoringSessionId=id) }
             val replayed=withContext(Dispatchers.Default) { runCatching { PromptEngine.replaySession(state.value,snapshot) } }
+            if (version != sessionOpenVersion) return@launch
+            if (state.value.sessions.none { it.id == id }) {
+                _runtime.update { it.copy(restoringSessionId=null) }
+                return@launch
+            }
             replayed.exceptionOrNull()?.let { error(it) }
             val current=state.value.sessions.firstOrNull { it.id==id }
             if(replayed.isSuccess && current?.messages==snapshot.messages && current.variables==snapshot.variables) {
@@ -325,7 +352,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 }
             } else if(current!=null) replayInBackground(id)
             expectOpeningRender(state.value.sessions.firstOrNull { it.id==id } ?: snapshot)
-            _runtime.update { it.copy(activeSessionId=id,status="") }
+            _runtime.update { it.copy(activeSessionId=id,restoringSessionId=null) }
         }
     }
     private fun replayInBackground(sessionId:String,startIndex:Int=0,force:Boolean=false) {
@@ -352,51 +379,94 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         if(session.messages.isNotEmpty()) session=PromptEngine.initializeSession(state.value,session)
         change { it.copy(sessions=it.sessions+session) }; openSession(session.id)
     }
-    override fun updateSession(session:ChatSession) {
+    override fun updateSession(session:ChatSession,onSaved:(()->Unit)?) {
         val current=state.value.sessions.find { it.id==session.id } ?: return
         val editedSession=if(session.summary!=current.summary) session.copy(extra=SummaryPlanner.clearCursor(session.extra)) else session
         if(runtime.value.generating && generatingSession==session.id) {
-            mutateSession(session.id) { editedSession.copy(messages=it.messages,variables=it.variables,worldState=it.worldState) }
-        } else mutateSession(session.id) { editedSession.copy(messages=current.messages.map { message ->
+            mutateSession(session.id,onSaved=onSaved) { editedSession.copy(messages=it.messages,variables=it.variables,worldState=it.worldState) }
+        } else mutateSession(session.id,onSaved=onSaved) { editedSession.copy(messages=current.messages.map { message ->
             val edited=session.messages.firstOrNull { it.id==message.id }
             if(edited!=null && edited.variables!=message.variables) CandidateSnapshots.attach(message,edited.variables) else message
         }) }
     }
-    override fun deleteSession(id:String) { if(generatingSession==id) stop(); MessageRenders.clear(id); change { it.copy(sessions=it.sessions.filterNot { s -> s.id==id }) }; if(runtime.value.activeSessionId==id) openSession(null); viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(id) } }
-    override fun saveRole(role:RoleCard) { change { s -> s.copy(roles=if(s.roles.any { it.id==role.id }) s.roles.map { if(it.id==role.id) role else it } else s.roles+role) } }
+    override fun deleteSession(id:String) {
+        if(generatingSession==id) stop()
+        MessageRenders.clear(id)
+        val removedMedia=state.value.sessions.firstOrNull { it.id==id }?.messages?.map { it.image }.orEmpty()
+        if(runtime.value.pendingAttachment?.sessionId==id) _runtime.update { it.copy(pendingAttachment=null) }
+        _runtime.update { it.copy(composerDrafts=it.composerDrafts-id) }
+        change { it.copy(sessions=it.sessions.filterNot { s -> s.id==id }) }
+        if(runtime.value.activeSessionId==id) openSession(null)
+        viewModelScope.launch(Dispatchers.IO) { store.deleteVectors(id); deleteUnreferencedChatMedia(removedMedia) }
+    }
+    override fun saveRole(role:RoleCard,onSaved:(()->Unit)?) { change(onSaved) { s -> s.copy(roles=if(s.roles.any { it.id==role.id }) s.roles.map { if(it.id==role.id) role else it } else s.roles+role) } }
     override fun deleteRole(id:String) {
         if(state.value.sessions.any { id in it.roleIds }) { error(IllegalArgumentException("这个角色仍被会话使用，请先删除关联会话或调整成员")); return }
         change { it.copy(roles=it.roles.filterNot { r -> r.id==id }) }
     }
-    override fun saveLibrary(document:LibraryDocument) { change { s -> s.copy(library=if(s.library.any { it.id==document.id }) s.library.map { if(it.id==document.id) document else it } else s.library+document) } }
+    override fun saveLibrary(document:LibraryDocument,onSaved:(()->Unit)?) { change(onSaved) { s -> s.copy(library=if(s.library.any { it.id==document.id }) s.library.map { if(it.id==document.id) document else it } else s.library+document) } }
     override fun deleteLibrary(id:String) { change { it.copy(library=it.library.filterNot { d -> d.id==id }) } }
-    override fun saveConnection(connection:ApiConnection,apiKey:String?) {
+    override fun saveConnection(connection:ApiConnection,apiKey:String?,onSaved:(()->Unit)?) {
         viewModelScope.launch { try {
             withContext(Dispatchers.IO) { if(apiKey!=null) { if(apiKey.isEmpty()) vault.delete(connection.id) else vault.put(connection.id,apiKey) } }
-            change { s -> s.copy(connections=if(s.connections.any { it.id==connection.id }) s.connections.map { if(it.id==connection.id) connection else it } else s.connections+connection,
+            change(onSaved) { s -> s.copy(connections=if(s.connections.any { it.id==connection.id }) s.connections.map { if(it.id==connection.id) connection else it } else s.connections+connection,
                 preferences=if(s.preferences.defaultConnectionId==null) s.preferences.copy(defaultConnectionId=connection.id) else s.preferences) }
         } catch(e:Exception) { error(e) } }
     }
     override fun deleteConnection(id:String) { vault.delete(id); change { s -> s.copy(connections=s.connections.filterNot { it.id==id },preferences=s.preferences.copy(defaultConnectionId=s.preferences.defaultConnectionId?.takeUnless { it==id })) } }
-    override fun savePreferences(preferences:UiPreferences) { change { it.copy(preferences=preferences) } }
+    override fun savePreferences(preferences:UiPreferences) {
+        val previous=state.value.preferences.userAvatarPath
+        if(previous!=null && previous!=preferences.userAvatarPath && previous.startsWith("media/user-avatar-")) runCatching { File(context.filesDir,previous).delete() }
+        change { it.copy(preferences=preferences) }
+    }
     override fun saveEmbedding(settings:EmbeddingSettings) { change { it.copy(embedding=settings) } }
     override fun send(text:String,targetRoleId:String?) {
-        if(text.isBlank() || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return
+        if((text.isBlank() && runtime.value.pendingAttachment==null) || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return
         viewModelScope.launch { sendCommitted(text,targetRoleId) }
     }
+    override fun updateComposerDraft(sessionId:String,text:String) {
+        _runtime.update { current ->
+            val draft=current.composerDrafts[sessionId] ?: ComposerDraft()
+            current.copy(composerDrafts=current.composerDrafts+(sessionId to draft.copy(text=text,revision=draft.revision+1)))
+        }
+    }
+    override fun sendFromComposer(sessionId:String,text:String,targetRoleId:String?) {
+        if((text.isBlank() && runtime.value.pendingAttachment?.sessionId!=sessionId) || runtime.value.activeSessionId!=sessionId || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return
+        val revision=runtime.value.composerDrafts[sessionId]?.revision ?: 0L
+        viewModelScope.launch {
+            sendCommitted(text,targetRoleId) {
+                _runtime.update { current ->
+                    val draft=current.composerDrafts[sessionId] ?: ComposerDraft()
+                    if(draft.revision!=revision) current
+                    else current.copy(composerDrafts=current.composerDrafts+(sessionId to ComposerDraft("",draft.revision+1)))
+                }
+            }
+        }
+    }
     /** Commit the user message and its lifecycle events; returns false when nothing was saved. */
-    private suspend fun sendCommitted(text:String,targetRoleId:String?):Boolean {
-        if(text.isBlank() || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return false
+    private suspend fun sendCommitted(text:String,targetRoleId:String?,onCommitted:(()->Unit)?=null):Boolean {
         val s=active() ?: return false
+        val attachment=runtime.value.pendingAttachment?.takeIf { it.sessionId==s.id }
+        if((text.isBlank() && attachment==null) || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return false
+        if(attachment!=null && runCatching { connection(s) }.getOrNull()?.supportsVision==false) {
+            _runtime.update { it.copy(error="当前连接未启用“支持视觉输入”。附图已保留；请开启该连接的视觉支持或移除附图后再发送。") }
+            return false
+        }
         val owner=currentCoroutineContext().job
         pendingSend=owner
         generatingSession=s.id
-        _runtime.update { it.copy(generating=true,status="正在保存消息…") }
+        _runtime.update { it.copy(generating=true,status="正在保存消息…",generationStage=GenerationStage(s.id,GenerationPhase.SAVING_MESSAGE)) }
         var handedOff=false
-        val message=ChatMessage(role="user",content=text,name=s.userName,variables=s.variables)
+        val message=ChatMessage(
+            role="user",content=text,name=s.userName,variables=s.variables,image=attachment?.mediaPath.orEmpty(),
+            extra=targetRoleId?.let { buildJsonObject { put("xujing_target_role_id",it) } } ?: EmptyObject,
+        )
         val rendered=MessageRenders.expect(s.id,message.id,s.messages.size,"user_message_rendered",null,message.content,message.swipeIndex)
         try {
             if(!commitSession(s.id) { it.copy(messages=it.messages+message) }) { MessageRenders.cancel(rendered); return false }
+            // A durable user message has been accepted even if the caller is cancelled immediately after the commit.
+            if(attachment!=null) _runtime.update { current -> if(current.pendingAttachment==attachment) current.copy(pendingAttachment=null) else current }
+            onCommitted?.invoke()
             currentCoroutineContext().ensureActive()
             val committed=state.value.sessions.firstOrNull { it.id==s.id }
             if(committed==null || runtime.value.activeSessionId!=s.id) { MessageRenders.cancel(rendered); return false }
@@ -404,6 +474,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             val index=committed.messages.indexOfFirst { it.id==message.id }
             if(index>=0) emitMessageEvent(s.id,"message_sent",JsonArray(listOf(JsonPrimitive(index))))
             MessageRenders.arm(rendered)
+            updateGenerationStage(s.id,GenerationPhase.PREPARING,"正在准备回复…")
             MessageRenders.await(rendered)
             currentCoroutineContext().ensureActive()
             if(runtime.value.activeSessionId!=s.id) return true
@@ -413,11 +484,32 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         } finally {
             if(!handedOff) MessageRenders.cancel(rendered)
             if(pendingSend===owner) pendingSend=null
-            if(!handedOff) { _runtime.update { it.copy(generating=false) }; generatingSession=null }
+            if(!handedOff) {
+                _runtime.update { current ->
+                    val stage=if(current.generationStage?.sessionId==s.id) null else current.generationStage
+                    current.copy(generating=false,generationStage=stage)
+                }
+                generatingSession=null
+            }
         }
     }
     override fun stop() { pendingSend?.cancel(); generation?.cancel(); SessionHooks.cancel(generatingSession); api.cancel() }
     override fun regenerate() { val s=active() ?: return; if(runtime.value.generating || s.messages.lastOrNull()?.role!="assistant") return; generate(s.id,s.messages.last().speakerId,"regenerate") }
+    override fun retryReply(sessionId:String,fallbackTargetRoleId:String?) {
+        val session=state.value.sessions.firstOrNull { it.id==sessionId } ?: return
+        if(runtime.value.activeSessionId!=sessionId || runtime.value.generating || runtime.value.busy || generation?.isActive==true || pendingSend!=null) return
+        when(val last=session.messages.lastOrNull()) {
+            null -> return
+            else -> when(last.role) {
+                "user" -> {
+                    val storedTarget=last.extra.text("xujing_target_role_id").takeIf { it in session.roleIds }
+                    val fallback=fallbackTargetRoleId?.takeIf { it in session.roleIds }
+                    generate(session.id,storedTarget ?: fallback,"normal")
+                }
+                "assistant" -> generate(session.id,last.speakerId,"regenerate")
+            }
+        }
+    }
     override fun continueReply() { val s=active() ?: return; if(runtime.value.generating || s.messages.lastOrNull()?.role!="assistant") return; generate(s.id,s.messages.last().speakerId,"continue") }
     private fun connection(s:ChatSession,summary:Boolean=false):ApiConnection {
         val id=(if(summary) s.summaryConnectionId else s.connectionId) ?: s.connectionId ?: state.value.preferences.defaultConnectionId
@@ -440,10 +532,10 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         if(generation?.isActive==true) return
         clearSuggestions()
         generatingSession=sessionId
-        _runtime.update { it.copy(generating=true,streamingMessageId=null) }
+        _runtime.update { it.copy(generating=true,streamingMessageId=null,generationStage=GenerationStage(sessionId,GenerationPhase.PREPARING)) }
         generation=viewModelScope.launch {
             generatingSession=sessionId
-            _runtime.update { it.copy(generating=true,status="正在编排提示词…") }
+            updateGenerationStage(sessionId,GenerationPhase.PREPARING,"正在编排提示词…")
             var replyId:String?=null; var previous:ChatMessage?=null; var initial:ChatSession?=null
             var raw=""; var successful=false; var started=false
             var replyRender:CompletableDeferred<Unit>?=null
@@ -510,7 +602,14 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                     }
                 }
                 var lastUpdate=0L
-                val response=api.complete(connection,build.messages) { delta ->
+                var receivedFirstToken=false
+                val outgoingImages=withContext(Dispatchers.IO) { resolvePromptImages(build.messages) }
+                updateGenerationStage(sessionId,GenerationPhase.WAITING,"等待模型回复…")
+                val response=api.complete(connection,outgoingImages) { delta ->
+                    if(!receivedFirstToken) {
+                        receivedFirstToken=true
+                        updateGenerationStage(sessionId,GenerationPhase.RECEIVING,"正在接收回复…")
+                    }
                     raw+=delta
                     streamEvents?.trySend("js_stream_token_received_incrementally" to JsonArray(listOf(JsonPrimitive(delta),JsonPrimitive(mode))))
                     streamEvents?.trySend("js_stream_token_received_fully" to JsonArray(listOf(JsonPrimitive(raw),JsonPrimitive(mode))))
@@ -522,6 +621,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                     }
                 }
                 streamEvents?.close(); streamEventJob?.join(); streamEvents=null; streamEventJob=null
+                updateGenerationStage(sessionId,GenerationPhase.FINALIZING,"正在处理回复…")
                 val source=(if(mode=="continue") previous?.extra?.text("sourceText",previous!!.content).orEmpty() else "")+response
                 val processing=state.value.sessions.first { it.id==s.id }.copy(variables=build.variables)
                 val processed=withContext(Dispatchers.Default) { PromptEngine.processOutput(if(mode=="continue") response else source,state.value,processing) }
@@ -585,7 +685,13 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                         replyRender?.let(MessageRenders::cancel)
                         if(started) withContext(NonCancellable) { emitMessageEvent(sessionId,"generation_stopped",JsonArray(emptyList())) }
                     }
-                } finally { _runtime.update { it.copy(generating=false,streamingMessageId=null) }; generatingSession=null }
+                } finally {
+                    _runtime.update { current ->
+                        val stage=if(current.generationStage?.sessionId==sessionId) null else current.generationStage
+                        current.copy(generating=false,streamingMessageId=null,generationStage=stage)
+                    }
+                    generatingSession=null
+                }
             }
         }
     }
@@ -640,7 +746,14 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             s.copy(messages=s.messages.map { m -> if(m.id!=id) m else m.copy(content=processed,swipes=swipes,extra=extra) })
         }
     }
-    override fun deleteMessage(id:String) = historyChange { s -> val messages=s.messages.filterNot { it.id==id }; s.copy(messages=messages,variables=messages.lastOrNull()?.let { CandidateSnapshots.variablesFor(it) } ?: EmptyObject) }
+    override fun deleteMessage(id:String) {
+        val removedMedia=mutableListOf<String>()
+        historyChange(afterCommit={ _ -> deleteUnreferencedChatMedia(removedMedia) }) { s ->
+            s.messages.firstOrNull { it.id==id }?.image?.takeIf(String::isNotBlank)?.let { removedMedia.add(it) }
+            val messages=s.messages.filterNot { it.id==id }
+            s.copy(messages=messages,variables=messages.lastOrNull()?.let { CandidateSnapshots.variablesFor(it) } ?: EmptyObject)
+        }
+    }
     override fun selectSwipe(id:String,index:Int) {
         if(runtime.value.generating) return
         val session=active() ?: return
@@ -685,7 +798,17 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             _runtime.update { it.copy(status="") }
         }
     }
-    override fun rewind(id:String) = historyChange { s -> val index=s.messages.indexOfFirst { it.id==id }; if(index<0) s else { val messages=s.messages.take(index+1); s.copy(messages=messages,variables=messages.lastOrNull()?.let { CandidateSnapshots.variablesFor(it) } ?: EmptyObject) } }
+    override fun rewind(id:String) {
+        val removedMedia=mutableListOf<String>()
+        historyChange(afterCommit={ _ -> deleteUnreferencedChatMedia(removedMedia) }) { s ->
+            val index=s.messages.indexOfFirst { it.id==id }
+            if(index<0) s else {
+                s.messages.drop(index+1).forEach { message -> message.image.takeIf(String::isNotBlank)?.let { removedMedia.add(it) } }
+                val messages=s.messages.take(index+1)
+                s.copy(messages=messages,variables=messages.lastOrNull()?.let { CandidateSnapshots.variablesFor(it) } ?: EmptyObject)
+            }
+        }
+    }
     override fun summarize() {
         if(runtime.value.generating) return
         val s=active() ?: return
@@ -700,11 +823,18 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         }
     }
     override fun showPrompt() { val s=active() ?: return; try { val result=lastPrompts[s.id] ?: PromptEngine.build(state.value,s); _runtime.update { it.copy(promptPreview=buildJsonObject { put("source",if(s.id in lastPrompts) "最近一次请求的提示词" else "按当前资料编排的预览，未包含语义检索结果"); put("messages",AppJson.encodeToJsonElement(result.messages)); put("activatedWorldEntries",AppJson.encodeToJsonElement(result.activatedEntries)); put("diagnostics",AppJson.encodeToJsonElement(result.diagnostics)) }.let { AppJson.encodeToString(it) }) } } catch(e:Exception) { error(e) } }
+    override fun clearImportResult() { _runtime.update { it.copy(importResult = null) } }
     override fun clearError() { _runtime.update { it.copy(error=null) } }
     /** One-shot UI intent from the card runtime; the Compose shell consumes it. */
     override fun consumeOpenLibrary() { _runtime.update { it.copy(openLibraryKind=null) } }
     override fun clearScriptPanel() { _runtime.update { it.copy(scriptPanel=null) } }
-    override fun consumeInputDraft() { _runtime.update { if(it.inputDraft==null) it else it.copy(inputDraft=null) } }
+    override fun consumeInputDraft() { _runtime.update { if(it.inputDraft==null && it.inputDraftSessionId==null) it else it.copy(inputDraft=null,inputDraftSessionId=null) } }
+    override fun clearPendingAttachment() {
+        val pending=runtime.value.pendingAttachment ?: return
+        _runtime.update { it.copy(pendingAttachment=null) }
+        if(runtime.value.generating || pendingSend!=null) return
+        viewModelScope.launch(Dispatchers.IO) { deleteUnreferencedChatMedia(listOf(pending.mediaPath)) }
+    }
     override fun clearPrompt() { _runtime.update { it.copy(promptPreview=null) } }
     override fun clearSuggestions() {
         suggestionVersion++
@@ -759,7 +889,62 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
     fun importUri(uri:Uri,kind:String) { viewModelScope.launch {
         _runtime.update { it.copy(busy=true) }
         try {
-            if(kind.startsWith("background:")) {
+            if(kind.startsWith("chatimage:")) {
+                val sessionId=kind.substringAfter(':')
+                require(state.value.sessions.any { it.id==sessionId }) { "会话已关闭" }
+                require(runtime.value.activeSessionId==sessionId || runtime.value.restoringSessionId==sessionId) { "请打开此会话后再添加附图" }
+                val displayName=context.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { cursor ->
+                    if(cursor.moveToFirst()) cursor.getString(0) else null
+                }?.trim()?.takeIf(String::isNotBlank)?.take(120) ?: "附图"
+                val relative=withContext(Dispatchers.IO) {
+                    val bytes=context.contentResolver.openInputStream(uri)?.use { input ->
+                        val output=java.io.ByteArrayOutputStream(); val buffer=ByteArray(65536)
+                        while(true) { val n=input.read(buffer); if(n<0) break; require(output.size()+n<=16*1024*1024) { "附图不能超过 16 MiB" }; output.write(buffer,0,n) }; output.toByteArray()
+                    } ?: error("无法打开图片")
+                    val bounds=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
+                    require(bounds.outWidth>0 && bounds.outHeight>0 && bounds.outWidth.toLong()*bounds.outHeight<=40_000_000) { "请选择有效且不超过 4000 万像素的图片" }
+                    var sample=1
+                    while(maxOf(bounds.outWidth,bounds.outHeight)/(sample*2)>=2048) sample*=2
+                    val decoded=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,android.graphics.BitmapFactory.Options().apply { inSampleSize=sample }) ?: error("无法解码图片")
+                    val longest=maxOf(decoded.width,decoded.height)
+                    val scaled=if(longest<=2048) decoded else android.graphics.Bitmap.createScaledBitmap(decoded,(decoded.width.toLong()*2048/longest).toInt().coerceAtLeast(1),(decoded.height.toLong()*2048/longest).toInt().coerceAtLeast(1),true)
+                    val encoded=try {
+                        java.io.ByteArrayOutputStream().use { output -> require(scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG,85,output)) { "图片编码失败" }; output.toByteArray() }
+                    } finally { if(scaled!==decoded) scaled.recycle(); decoded.recycle() }
+                    val path="media/chat-${newId()}.jpg"
+                    File(context.filesDir,"media").mkdirs(); File(context.filesDir,path).writeBytes(encoded)
+                    path
+                }
+                val previous=runtime.value.pendingAttachment
+                _runtime.update { it.copy(pendingAttachment=PendingAttachment(sessionId,displayName,relative),status="已添加附图：$displayName") }
+                previous?.takeIf { it.mediaPath!=relative }?.let { deleteUnreferencedChatMedia(listOf(it.mediaPath)) }
+                return@launch
+            } else if(kind=="useravatar") {
+                val path=withContext(Dispatchers.IO) {
+                    val bytes=context.contentResolver.openInputStream(uri)?.use { input ->
+                        val output=java.io.ByteArrayOutputStream(); val buffer=ByteArray(65536)
+                        while(true) { val n=input.read(buffer); if(n<0) break; require(output.size()+n<=16*1024*1024) { "头像不能超过 16 MiB" }; output.write(buffer,0,n) }; output.toByteArray()
+                    } ?: error("无法打开图片")
+                    val bounds=android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds=true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
+                    require(bounds.outWidth>0 && bounds.outHeight>0 && bounds.outWidth.toLong()*bounds.outHeight<=40_000_000) { "请选择有效且不超过 4000 万像素的图片" }
+                    var sample=1
+                    while(maxOf(bounds.outWidth,bounds.outHeight)/(sample*2)>=512) sample*=2
+                    val decoded=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,android.graphics.BitmapFactory.Options().apply { inSampleSize=sample }) ?: error("无法解码图片")
+                    val longest=maxOf(decoded.width,decoded.height)
+                    val scaled=if(longest<=512) decoded else android.graphics.Bitmap.createScaledBitmap(decoded,(decoded.width.toLong()*512/longest).toInt().coerceAtLeast(1),(decoded.height.toLong()*512/longest).toInt().coerceAtLeast(1),true)
+                    val encoded=try {
+                        java.io.ByteArrayOutputStream().use { output -> require(scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG,88,output)) { "图片编码失败" }; output.toByteArray() }
+                    } finally { if(scaled!==decoded) scaled.recycle(); decoded.recycle() }
+                    val relative="media/user-avatar-${newId()}.jpg"
+                    File(context.filesDir,"media").mkdirs(); File(context.filesDir,relative).writeBytes(encoded)
+                    relative
+                }
+                savePreferences(state.value.preferences.copy(userAvatarPath=path))
+                _runtime.update { it.copy(status="头像已更新") }
+                return@launch
+            } else if(kind.startsWith("background:")) {
                 val sessionId=kind.substringAfter(':')
                 require(state.value.sessions.any { it.id==sessionId }) { "会话已关闭" }
                 val relative=withContext(Dispatchers.IO) {
@@ -790,7 +975,9 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 val bundle=withContext(Dispatchers.Default) { CompatibilityCodec.decode(filename,bytes,kind) }
                 val processed=withContext(Dispatchers.IO) { materialize(bundle) }
                 merge(processed,kind)
-                _runtime.update { it.copy(status="已导入 ${bundle.roles.size} 个角色、${bundle.sessions.size} 个会话、${bundle.library.size} 份资料"+(if(bundle.warnings.isEmpty()) "" else "\n"+bundle.warnings.joinToString("\n"))) }
+                if (!persist()) return@launch
+                _runtime.update { it.copy(importResult="已导入 ${bundle.roles.size} 个角色、${bundle.sessions.size} 个会话、${bundle.library.size} 份资料"+(if(bundle.warnings.isEmpty()) "" else "\n"+bundle.warnings.joinToString("\n"))) }
+                return@launch
             }
             persist()
         } catch(e:Exception) { error(e) } finally { _runtime.update { it.copy(busy=false) } }
@@ -831,6 +1018,52 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         options.inSampleSize=(maxOf(options.outWidth,options.outHeight)/2048).coerceAtLeast(1); options.inJustDecodeBounds=false
         val bitmap=android.graphics.BitmapFactory.decodeFile(file.absolutePath,options) ?: return null
         return try { java.io.ByteArrayOutputStream().use { output -> require(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,output)); output.toByteArray() } } finally { bitmap.recycle() }
+    }
+
+    /** Only chat attachments are eligible for media cleanup; backgrounds and avatars must survive. */
+    private fun chatMediaPath(image:String):String? {
+        val value=image.trim()
+        return value.takeIf { it.startsWith("media/chat-") && !it.contains("..") }
+    }
+    private fun mediaFile(relative:String):File? {
+        if(relative.isBlank() || relative.contains("..")) return null
+        val root=File(context.filesDir,"media").canonicalFile
+        val file=File(context.filesDir,relative).canonicalFile
+        return file.takeIf { it.isFile && it.toPath().startsWith(root.toPath()) }
+    }
+    private suspend fun deleteUnreferencedChatMedia(paths:Collection<String>) {
+        val candidates=paths.mapNotNull(::chatMediaPath).distinct()
+        if(candidates.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            val referenced=buildSet {
+                state.value.sessions.forEach { session -> session.messages.forEach { message -> chatMediaPath(message.image)?.let { add(it) } } }
+                runtime.value.pendingAttachment?.let { pending -> chatMediaPath(pending.mediaPath)?.let { add(it) } }
+            }
+            candidates.filterNot { it in referenced }.forEach { relative -> runCatching { mediaFile(relative)?.delete() } }
+        }
+    }
+    private fun imageMime(bytes:ByteArray,extension:String=""):String = when {
+        bytes.size>=3 && bytes[0]==0xFF.toByte() && bytes[1]==0xD8.toByte() && bytes[2]==0xFF.toByte() -> "image/jpeg"
+        bytes.size>=8 && bytes[0]==0x89.toByte() && bytes[1]==0x50.toByte() && bytes[2]==0x4E.toByte() && bytes[3]==0x47.toByte() -> "image/png"
+        bytes.size>=4 && bytes[0]==0x52.toByte() && bytes[1]==0x49.toByte() && bytes[2]==0x46.toByte() && bytes[3]==0x46.toByte() -> "image/webp"
+        bytes.size>=3 && bytes[0]==0x47.toByte() && bytes[1]==0x49.toByte() && bytes[2]==0x46.toByte() -> "image/gif"
+        else -> when(extension.lowercase()) { "png" -> "image/png"; "webp" -> "image/webp"; "gif" -> "image/gif"; else -> "image/jpeg" }
+    }
+    /** Resolve image references into sendable URLs before they reach the API; run on IO. */
+    private fun resolvePromptImages(messages:List<PromptMessage>):List<PromptMessage> {
+        if(messages.none { it.images.isNotEmpty() }) return messages
+        return messages.map { message -> if(message.images.isEmpty()) message else message.copy(images=message.images.mapNotNull(::resolvedImageUrl)) }
+    }
+    private fun resolvedImageUrl(reference:String):String? {
+        val value=reference.trim()
+        if(value.isEmpty()) return null
+        if(value.startsWith("data:")) return value
+        if(value.startsWith("http://",true) || value.startsWith("https://",true)) return value
+        val file=mediaFile(value) ?: return null
+        if(file.length()>16L*1024*1024) return null
+        val bytes=file.readBytes()
+        if(bytes.isEmpty()) return null
+        return "data:${imageMime(bytes,file.extension)};base64,${android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)}"
     }
 
     private suspend fun cardRequest(sessionId:String,method:String,payload:String,runtimeToken:String):JsonElement {
@@ -914,7 +1147,9 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             // Fills the chat input without sending; allowed while a reply is streaming.
             "setInput" -> {
                 require(runtime.value.activeSessionId==s.id) { "请打开此会话后填写输入框" }
-                _runtime.update { it.copy(inputDraft=obj.text("text")) }
+                val text=obj.text("text")
+                updateComposerDraft(s.id,text)
+                _runtime.update { it.copy(inputDraft=text,inputDraftSessionId=s.id) }
                 JsonPrimitive(true)
             }
             "generate" -> {
@@ -924,7 +1159,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                     val content=message.text("content"); val role=message.text("role","system")
                     if(content.isBlank() || role !in setOf("system","developer","user","assistant")) null else PromptMessage(role,content)
                 } }
-                JsonPrimitive(api.complete(connection(s),custom.ifEmpty { build.messages }) { })
+                JsonPrimitive(api.complete(connection(s),withContext(Dispatchers.IO) { resolvePromptImages(custom.ifEmpty { build.messages }) }) { })
             }
             else -> error("尚未实现的角色卡接口：$method")
         }

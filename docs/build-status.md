@@ -1,6 +1,6 @@
 # 构建记录
 
-日期：2026-11-01。当前版本：0.2.0 开发版。
+日期：2026-11-01。当前版本：0.2.1 开发版。
 
 - `:core:compileKotlin` 首次构建通过，后续修改随 APK 构建重新编译。
 - Android SDK 36、Build Tools 35.0.0、Gradle 8.13 已安装至 D 盘；下载的工具归档已核对上游校验值。
@@ -12,11 +12,11 @@
 
 ## 安装包
 
-包名 `app.xujing`，当前版本 `0.2.0`（versionCode 2），最低 Android 8.0（API 26）。开发签名，不是正式发行版本。
+包名 `app.xujing`，当前版本 `0.2.1`（versionCode 3），最低 Android 8.0（API 26）。开发签名，不是正式发行版本。
 
 产物包含 ARM64、armeabi-v7a、x86、x86_64 分包和通用包；当前 SHA-256 值位于 `dist/SHA256SUMS.txt`。安装包不包含模型权重。
 
-源码归档为 `dist/xujing-0.2.0-source.zip`，不包含构建缓存、本机 SDK 路径配置、签名密钥、APK 或模型权重。`README.md` 记录本机构建方法。
+源码归档为 `dist/xujing-0.2.1-source.zip`，不包含构建缓存、本机 SDK 路径配置、签名密钥、APK 或模型权重。`README.md` 记录本机构建方法。
 
 ## 尚未验证
 
@@ -156,5 +156,15 @@
 - 全 ABI 重新构建：`app-arm64-v8a-debug.apk`、`app-armeabi-v7a-debug.apk`、`app-universal-debug.apk`、`app-x86-debug.apk`、`app-x86_64-debug.apk`。
 - `dist` 版本化文件改名为 `xujing-0.2.0-*`，源码包为 `xujing-0.2.0-source.zip`；旧 `xujing-0.1.0-*` 已移除。
 - 真机 `192.168.8.80:5555`（M2012K11AC，Android 13 / arm64）覆盖安装 arm64 包，`dumpsys package` 确认 `versionName=0.2.0`、`versionCode=2`。
+
+## 版本 0.2.1（2026-11-10）
+
+- 真机 `192.168.8.80:5555` 出现 `读取本地资料失败，为保护原数据暂不写入：null`。
+- 定位结果：本地 SQLite 完好（`user_version=2`、`quick_check=ok`、`records` 114 条），失败原因为 `AEADBadTagException`；`/data/misc/keystore/persistent.sqlite` 中 2026-11-05 创建的 `xujing-local-v1` 仍然存在，但当天安装的 OhMyKeymint keymaster 模块把 `app.xujing` 列入 scoop，把 Keystore 请求路由到模块自带的密钥库，导致 App 在 12:55 新建了同名密钥。
+- 修复：从 `/data/misc/keystore/omk/injector.toml` 的 `scoop` 移除 `app.xujing` 并加入 `deny_packages`，触发 `restart.injector` 重启 Keystore 注入；旧密钥恢复可用，数据正常读回，全程未写入或清空数据库。
+- 代码：`AppStore.load()` 增加分阶段错误定位和完整堆栈日志；`SecretVault` 在缺少密钥别名时记录警告，并提供 `check()` 只读自检；`AppController` 在 `AEADBadTagException` 时提示密钥与数据不匹配及排查方向。
+- 版本提升为 `0.2.1`（versionCode 3），全 ABI 重新构建，`dist` 更新为 `xujing-0.2.1-*`，源码包为 `xujing-0.2.1-source.zip`；真机覆盖安装后确认 `versionName=0.2.1`、`versionCode=3`。
+- 详细的数据加密设计、故障判断与恢复步骤见 [本地资料加密与恢复](local-data-encryption.md)。
+- 本版本同时纳入 2026-11-08 完成的聊天附图 / 视觉输入与用户头像改动（`Chat.kt`、`XujingApp.kt`、`Models.kt`、`PromptEngine.kt` 等）；该部分已编译打包，未做真机与真实多模态模型验收，设计见 [视觉输入设计](vision-input-design-2026-11-08.md)。
 
 预设正则、脚本、消息 shell、B1 悬浮层的实现边界、兼容契约和排障方法见 [预设正则、脚本与悬浮面板兼容](preset-panel-compat.md)。

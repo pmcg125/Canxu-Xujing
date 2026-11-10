@@ -7,13 +7,19 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.foundation.interaction.DragInteraction
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.text.withStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -25,6 +31,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -65,10 +72,12 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     var settings by rememberSaveable(session.id) { mutableStateOf(false) }
     var models by rememberSaveable(session.id) { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var tools by rememberSaveable(session.id) { mutableStateOf(false) }
     var searching by rememberSaveable(session.id) { mutableStateOf(false) }
     var search by rememberSaveable(session.id) { mutableStateOf("") }
     val scope=rememberCoroutineScope()
     val context=LocalContext.current
+    val focusManager=LocalFocusManager.current
     val backgroundPath=session.extra.text("backgroundImage")
     val backgroundKey=session.extra.text("background","default")
     val blurRadius=((session.extra["backgroundBlur"] as? JsonPrimitive)?.floatOrNull ?: 0f).coerceIn(0f,24f)
@@ -92,11 +101,11 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     }
     val backgroundImage=scene.image
     val backgroundBrush=if(palette.size>1) Brush.linearGradient(palette) else SolidColor(palette.first())
-    var input by rememberSaveable(session.id) { mutableStateOf("") }
+    val draft = runtime.composerDrafts[session.id] ?: ComposerDraft()
+    val input = draft.text
     // Card scripts can push text into the composer (/setinput); apply each draft once.
-    LaunchedEffect(runtime.inputDraft) {
-        val draft = runtime.inputDraft ?: return@LaunchedEffect
-        input = draft
+    LaunchedEffect(runtime.inputDraft, runtime.inputDraftSessionId, session.id) {
+        if (runtime.inputDraft == null || runtime.inputDraftSessionId != session.id) return@LaunchedEffect
         actions.consumeInputDraft()
     }
     var target by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
@@ -104,28 +113,83 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     var deleting by remember { mutableStateOf<ChatMessage?>(null) }
     var rewinding by remember { mutableStateOf<ChatMessage?>(null) }
     val listState = rememberLazyListState()
+    var autoFollow by rememberSaveable(session.id) { mutableStateOf(true) }
+    var initialPositioned by rememberSaveable(session.id) { mutableStateOf(false) }
     val members = state.roles.filter { it.id in session.roleIds }
     val scriptButtons = SessionHooks.buttons.filter { it.sessionId == session.id }
     val reading = session.readingMode != "bubble"
     val fontSize = (session.extra["fontSize"] as? JsonPrimitive)?.floatOrNull ?: state.preferences.fontSize
-    BackHandler(enabled = settings || models) { if (models) models = false else settings = false }
-    if (models) { ModelSettings(state, runtime, actions, onClose = { models = false }); return }
+    val generationStage = runtime.generationStage?.takeIf { it.sessionId == session.id }
+    val lastMessage = session.messages.lastOrNull()
+    val retryLabel = when {
+        lastMessage?.role == "user" -> "重试回复"
+        lastMessage?.role == "assistant" && (lastMessage.extra["interrupted"] as? JsonPrimitive)?.booleanOrNull == true -> "重说"
+        else -> null
+    }
+    val generationLabel = when (generationStage?.phase) {
+        GenerationPhase.SAVING_MESSAGE -> "正在保存消息…"
+        GenerationPhase.PREPARING -> "正在准备回复…"
+        GenerationPhase.WAITING -> "等待模型回复…"
+        GenerationPhase.RECEIVING -> "正在接收回复…"
+        GenerationPhase.FINALIZING -> "正在整理回复…"
+        null -> null
+    }
+    val pendingAttachment = runtime.pendingAttachment?.takeIf { it.sessionId == session.id }
+    // Vision gate mirrors AppController's send check: the connection the session will actually use.
+    val visionConnection = state.connections.firstOrNull { it.id == (session.connectionId ?: state.preferences.defaultConnectionId) }
+    val visionHint = when {
+        visionConnection == null -> "尚未选择 API 连接，暂不能添加图片"
+        !visionConnection.supportsVision -> "当前连接未开启视觉输入，可在连接设置中开启"
+        else -> null
+    }
+    BackHandler(enabled = settings || models || tools) { if (models) models = false else if (settings) settings = false else tools = false }
     if (settings) {
-        SessionSettings(session, state, onClose = { settings = false }, onSave = { actions.updateSession(it.copy(messages = session.messages)); settings = false }, onModels = { models = true })
+        SessionSettings(
+            session, state,
+            onClose = { settings = false },
+            onSave = { edited -> actions.updateSession(edited.copy(messages = session.messages)) {
+                models = false
+                settings = false
+            } },
+            onModels = { models = true },
+            visible = !models,
+        )
+        if (models) ModelSettings(state, runtime, actions, onClose = { models = false })
         return
     }
-    var autoFollow by remember(session.id) { mutableStateOf(true) }
-    LaunchedEffect(session.id) { if (session.messages.isNotEmpty()) listState.scrollToItem(session.messages.lastIndex) }
-    // A newly appended message (send or generation placeholder) always takes the viewport.
-    LaunchedEffect(session.messages.lastOrNull()?.id) {
-        if (session.messages.isNotEmpty()) { autoFollow = true; listState.animateScrollToItem(session.messages.lastIndex) }
+    LaunchedEffect(session.id) {
+        if (!initialPositioned) {
+            if (session.messages.isNotEmpty()) listState.scrollToBottom(session.messages.size + 1)
+            initialPositioned = true
+        }
     }
-    // While streaming keep the growing reply pinned, unless the reader scrolled away.
-    LaunchedEffect(session.messages.size, session.messages.lastOrNull()?.content?.length, runtime.generating) {
-        if (runtime.generating && autoFollow && session.messages.isNotEmpty()) listState.scrollToItem(session.messages.lastIndex)
+    LaunchedEffect(session.id, session.messages.size, lastMessage?.id, lastMessage?.content?.length, lastMessage?.swipeIndex, runtime.streamingMessageId) {
+        if (initialPositioned && autoFollow && session.messages.isNotEmpty()) listState.scrollToBottom(session.messages.size + 1)
     }
     LaunchedEffect(listState) {
-        listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) autoFollow = false }
+        launch {
+            listState.interactionSource.interactions.collect {
+                when (it) {
+                    is DragInteraction.Start -> autoFollow = false
+                    is DragInteraction.Stop -> if (listState.isAtTail()) autoFollow = true
+                    is DragInteraction.Cancel -> if (listState.isAtTail()) autoFollow = true
+                }
+            }
+        }
+        launch {
+            var wasAtTail = false
+            snapshotFlow {
+                val visible = listState.layoutInfo.visibleItemsInfo
+                visible.joinToString("|") { "${it.index}:${it.offset}:${it.size}" } to listState.isAtTail()
+            }.distinctUntilChanged().collect { (_, atBottom) ->
+                val shouldFollow = autoFollow && (wasAtTail || atBottom)
+                if (atBottom) autoFollow = true
+                if (shouldFollow && initialPositioned && session.messages.isNotEmpty()) {
+                    listState.scrollToBottom(session.messages.size + 1)
+                }
+                wasAtTail = atBottom
+            }
+        }
     }
     LaunchedEffect(session.roleIds) { if (target !in session.roleIds) target = null }
     MaterialTheme(colorScheme = chatColorScheme(scene.accent)) {
@@ -138,7 +202,7 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
             TopAppBar(title = {
                 Column {
                     Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                    Text(if (runtime.generating) "正在编织故事…" else members.joinToString(" · ") { it.name }.ifBlank { "空白会话" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(members.joinToString(" · ") { it.name }.ifBlank { "空白会话" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }, navigationIcon = { IconButton(onClick = { actions.openSession(null) }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回会话列表") } }, actions = {
                 IconButton(onClick = { actions.updateSession(session.copy(readingMode = if (reading) "bubble" else "reading")) }) { Icon(if (reading) Icons.Outlined.Forum else Icons.Outlined.MenuBook, if (reading) "切换为气泡模式" else "切换为阅读模式") }
@@ -161,36 +225,71 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
         bottomBar = {
             Surface(tonalElevation = 2.dp) {
                 Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    if (generationLabel != null) Text(generationLabel, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                    if (members.size > 1) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        item { FilterChip(selected = target == null, onClick = { target = null }, label = { Text("轮流发言") }) }
+                        items(members, key = { it.id }) { role -> FilterChip(selected = target == role.id, onClick = { target = role.id }, label = { Text(role.name) }) }
+                    }
                     if (scriptButtons.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                         scriptButtons.forEach { button ->
                             SuggestionChip(
                                 onClick = { SessionHooks.runButton(button.sessionId, button.scriptId, button.name) },
                                 enabled = button.enabled && !runtime.generating && !runtime.busy,
-                                label = { Text(button.scriptName + " · " + button.label, maxLines = 1) }
+                                label = { Text(button.scriptName + " · " + button.label, maxLines = 1) },
                             )
                         }
                     }
-                    if (members.size > 1) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        item { FilterChip(selected = target == null, onClick = { target = null }, label = { Text("轮流发言") }) }
-                        items(members, key = { it.id }) { role -> FilterChip(selected = target == role.id, onClick = { target = role.id }, label = { Text(role.name) }) }
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(input, { input = it }, modifier = Modifier.weight(1f), placeholder = { Text(if (target == null) "写下行动、对白或剧情方向…" else "发送给 ${members.firstOrNull { it.id == target }?.name.orEmpty()}…") }, maxLines = 6, shape = RoundedCornerShape(24.dp))
-                        Spacer(Modifier.width(8.dp))
-                        if (runtime.generating) FilledIconButton(onClick = actions::stop, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Stop, "停止生成") }
-                        else FilledIconButton(onClick = { val text = input.trim(); if (text.isNotBlank()) { actions.send(text, target); input = "" } }, enabled = input.isNotBlank() && !runtime.busy, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Outlined.Send, "发送") }
-                    }
-                    if(runtime.suggestionSessionId==session.id && runtime.suggestions.isNotEmpty()) LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                        items(runtime.suggestions) { suggestion -> SuggestionChip(onClick={ input=suggestion; actions.clearSuggestions() },label={ Text(suggestion,maxLines=2,modifier=Modifier.widthIn(max=260.dp)) }) }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Row {
-                            TextButton(onClick = actions::regenerate, enabled = !runtime.generating && session.messages.any { it.role == "assistant" }) { Icon(Icons.Outlined.Refresh, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("重生成", style = MaterialTheme.typography.labelMedium) }
-                            TextButton(onClick = actions::continueReply, enabled = !runtime.generating && session.messages.lastOrNull()?.role == "assistant") { Icon(Icons.Outlined.EditNote, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("续写", style = MaterialTheme.typography.labelMedium) }
-                            TextButton(onClick=actions::suggestReplies,enabled=!runtime.generating && !runtime.busy && !runtime.suggesting) { Text(if(runtime.suggesting) "建议生成中…" else "回复建议",style=MaterialTheme.typography.labelMedium) }
+                    if (runtime.suggestionSessionId == session.id && runtime.suggestions.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+                        items(runtime.suggestions) { suggestion ->
+                            SuggestionChip(
+                                onClick = { actions.updateComposerDraft(session.id, suggestion); actions.clearSuggestions() },
+                                label = { Text(suggestion, maxLines = 2, modifier = Modifier.widthIn(max = 260.dp)) },
+                            )
                         }
-                        Text(if (reading) "阅读模式" else "气泡模式", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    pendingAttachment?.let { attachment -> PendingAttachmentCard(attachment, actions::clearPendingAttachment) }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(input, { actions.updateComposerDraft(session.id, it) }, modifier = Modifier.weight(1f).onFocusChanged { if (it.isFocused && tools) tools = false }, placeholder = { Text(if (target == null) "写下行动、对白或剧情方向…" else "发送给 ${members.firstOrNull { it.id == target }?.name.orEmpty()}…") }, maxLines = 6, shape = RoundedCornerShape(24.dp))
+                        Spacer(Modifier.width(8.dp))
+                        when {
+                            generationStage?.phase == GenerationPhase.SAVING_MESSAGE -> FilledIconButton(onClick = {}, enabled = false, modifier = Modifier.size(48.dp)) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+                            runtime.generating -> FilledIconButton(onClick = actions::stop, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Stop, "停止生成") }
+                            runtime.busy -> FilledIconButton(onClick = {}, enabled = false, modifier = Modifier.size(48.dp)) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+                            else -> FilledIconButton(onClick = { actions.sendFromComposer(session.id, input.trim(), target) }, enabled = input.isNotBlank() || pendingAttachment != null, modifier = Modifier.size(48.dp)) { Icon(Icons.AutoMirrored.Outlined.Send, "发送") }
+                        }
+                    }
+                    // QQ-style evenly spread tool icons; the old text action row lives here now.
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { actions.requestImport("chatimage:${session.id}") }, enabled = visionHint == null && !runtime.generating && !runtime.busy) {
+                            Icon(Icons.Outlined.Image, "添加图片", Modifier.size(22.dp))
+                        }
+                        IconButton(onClick = actions::suggestReplies, enabled = !runtime.generating && !runtime.busy && !runtime.suggesting) {
+                            if (runtime.suggesting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.Forum, "回复建议", Modifier.size(22.dp))
+                        }
+                        IconButton(onClick = { if (retryLabel != null) actions.retryReply(session.id, target) else actions.regenerate() }, enabled = !runtime.busy && !runtime.generating && (retryLabel != null || lastMessage?.role == "assistant")) {
+                            Icon(Icons.Outlined.Refresh, retryLabel ?: "重生成", Modifier.size(22.dp))
+                        }
+                        IconButton(onClick = actions::continueReply, enabled = !runtime.busy && !runtime.generating && lastMessage?.role == "assistant") {
+                            Icon(Icons.Outlined.EditNote, "续写", Modifier.size(22.dp))
+                        }
+                        IconButton(onClick = { if (!tools) focusManager.clearFocus(); tools = !tools }) {
+                            Icon(if (tools) Icons.Outlined.Close else Icons.Outlined.Add, if (tools) "收起会话工具" else "更多会话功能", Modifier.size(22.dp))
+                        }
+                    }
+                    if (visionHint != null) Text(visionHint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+                    if (tools) ChatToolsPanel(
+                        canBackground = !runtime.generating,
+                        canSummarize = !runtime.generating && session.messages.isNotEmpty(),
+                        canMemory = !runtime.busy && !runtime.generating,
+                        onBackground = { tools = false; actions.requestImport("background:${session.id}") },
+                        onSearch = { tools = false; searching = true },
+                        onSettings = { tools = false; settings = true },
+                        onPrompt = { tools = false; actions.showPrompt() },
+                        onSummarize = { tools = false; actions.summarize() },
+                        onMemory = { tools = false; actions.rebuildMemory() },
+                        onImport = { tools = false; actions.requestImport("chat") },
+                        onExport = { tools = false; actions.requestExport("chat", session.id) },
+                    )
                 }
             }
         },
@@ -198,23 +297,42 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (runtime.generating || runtime.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (session.messages.isEmpty()) EmptyState(Icons.Outlined.AutoStories, "故事由你开启", "发送第一句话，也可以在会话设置中调整人设、世界书和 API。", "会话设置", { settings = true })
-            else LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(horizontal = if (reading) 20.dp else 12.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(if (reading) 24.dp else 12.dp)) {
-                itemsIndexed(session.messages, key = { _, message -> message.id }) { index, message ->
-                    val previous = session.messages.getOrNull(index - 1)
-                    val showTime = previous == null || message.createdAt - previous.createdAt >= 5 * 60 * 1000L
-                    MessageItem(message, session, state, reading, fontSize, showName = members.size > 1, timeLabel = if (showTime) messageTime(message.createdAt) else null,
-                        streaming = runtime.generating && runtime.streamingMessageId == message.id,
-                        onEdit = { editing = message }, onDelete = { deleting = message }, onRewind = { rewinding = message },
-                        canGenerate = !runtime.busy && !runtime.generating && message.role == "assistant" && session.messages.lastOrNull()?.id == message.id,
-                        canEdit = !runtime.busy && !runtime.generating,
-                        onContinue = actions::continueReply, onRegenerate = actions::regenerate,
-                        onSwipe = { actions.selectSwipe(message.id, it) },
-                        onVariables = { variables -> actions.updateSession(session.copy(variables = variables, messages = session.messages.map { if (it.id == message.id) it.copy(variables = variables) else it })) },
-                        onSend = { actions.send(it, target) })
+            else Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = if (reading) 20.dp else 12.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(if (reading) 24.dp else 12.dp)) {
+                    itemsIndexed(session.messages, key = { _, message -> message.id }) { index, message ->
+                        val previous = session.messages.getOrNull(index - 1)
+                        val showTime = previous == null || message.createdAt - previous.createdAt >= 5 * 60 * 1000L
+                        MessageItem(message, session, state, reading, fontSize, showName = members.size > 1, timeLabel = if (showTime) messageTime(message.createdAt) else null,
+                            streaming = runtime.generating && runtime.streamingMessageId == message.id,
+                            onEdit = { editing = message }, onDelete = { deleting = message }, onRewind = { rewinding = message },
+                            canGenerate = !runtime.busy && !runtime.generating && message.role == "assistant" && session.messages.lastOrNull()?.id == message.id,
+                            canEdit = !runtime.busy && !runtime.generating,
+                            onContinue = actions::continueReply, onRegenerate = actions::regenerate,
+                            onSwipe = { actions.selectSwipe(message.id, it) },
+                            onVariables = { variables -> actions.updateSession(session.copy(variables = variables, messages = session.messages.map { if (it.id == message.id) it.copy(variables = variables) else it })) },
+                            onSend = { actions.send(it, target) })
+                    }
+                    item(key = "xujing-chat-tail:${session.id}") { Spacer(Modifier.height(1.dp)) }
+                }
+                if (!autoFollow && session.messages.isNotEmpty()) FilledTonalButton(onClick = {
+                    autoFollow = true
+                    scope.launch {
+                        val tailIndex = listState.layoutInfo.totalItemsCount - 1
+                        if (tailIndex >= 0) listState.animateScrollToItem(tailIndex, listState.layoutInfo.viewportSize.height)
+                    }
+                }, modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
+                    Icon(Icons.Outlined.KeyboardArrowDown, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("回到最新")
                 }
             }
         }
     }
+        runtime.scriptPanel?.takeIf { it.sessionId == session.id }?.let { panel ->
+            BackHandler { actions.clearScriptPanel() }
+            ScriptPanelOverlay(panel, onClose = actions::clearScriptPanel)
+        }
+        LiveScriptOverlay(session.id)
     }
     if(searching) AlertDialog(onDismissRequest={ searching=false },title={ Text("搜索聊天记录") },text={
         Column {
@@ -228,6 +346,7 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
             LazyColumn(Modifier.heightIn(max=360.dp)) { items(matches,key={ it.id }) { message ->
                 Column(Modifier.fillMaxWidth().clickable {
                     searching=false
+                    autoFollow=false
                     val index=session.messages.indexOfFirst { it.id==message.id }
                     if(index>=0) scope.launch {
                         // Cards below can grow after the first jump, so re-apply briefly.
@@ -246,6 +365,150 @@ internal fun ChatScreen(state: AppState, runtime: UiRuntime, actions: AppActions
     deleting?.let { message -> ConfirmDelete("这条消息", "该消息将从当前会话中删除。", { deleting = null }, { actions.deleteMessage(message.id) }) }
     rewinding?.let { message -> AlertDialog(onDismissRequest = { rewinding = null }, title = { Text("回溯到这条消息？") }, text = { Text("后续消息将移除，剧情变量回到此节点保存的状态。建议先导出当前会话。") }, confirmButton = { TextButton(onClick = { actions.rewind(message.id); rewinding = null }) { Text("回溯") } }, dismissButton = { TextButton(onClick = { rewinding = null }) { Text("取消") } }) }
     }
+}
+
+private suspend fun LazyListState.scrollToBottom(minimumItemCount: Int) {
+    snapshotFlow { layoutInfo.totalItemsCount }.first { it >= minimumItemCount }
+    val tailIndex = layoutInfo.totalItemsCount - 1
+    if (tailIndex >= 0) scrollToItem(tailIndex, layoutInfo.viewportSize.height)
+}
+
+private fun LazyListState.isAtTail(): Boolean {
+    val layout = layoutInfo
+    val tailIndex = layout.totalItemsCount - 1
+    return tailIndex >= 0 && !canScrollForward && layout.visibleItemsInfo.any { it.index == tailIndex }
+}
+
+/** Thumbnail + remove button for the picture that will ride along with the next message. */
+@Composable
+private fun PendingAttachmentCard(attachment: PendingAttachment, onRemove: () -> Unit) {
+    val bitmap = rememberChatMedia(attachment.mediaPath, 256)
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .55f),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp),
+    ) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.size(52.dp)) {
+                if (bitmap != null) Image(bitmap, attachment.displayName, contentScale = ContentScale.Crop)
+                else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Image, null, Modifier.size(22.dp)) }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(attachment.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
+                Text("附图将随这条消息发送", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onRemove) { Icon(Icons.Outlined.Close, "移除附图") }
+        }
+    }
+}
+
+/** Secondary session tools behind the composer's "+" button; mirrors the overflow menu actions. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatToolsPanel(
+    canBackground: Boolean,
+    canSummarize: Boolean,
+    canMemory: Boolean,
+    onBackground: () -> Unit,
+    onSearch: () -> Unit,
+    onSettings: () -> Unit,
+    onPrompt: () -> Unit,
+    onSummarize: () -> Unit,
+    onMemory: () -> Unit,
+    onImport: () -> Unit,
+    onExport: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolPanelTile("选择背景图片", Icons.Outlined.Visibility, canBackground, onBackground)
+                ToolPanelTile("搜索聊天记录", Icons.Outlined.Search, true, onSearch)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolPanelTile("会话设置", Icons.Outlined.Tune, true, onSettings)
+                ToolPanelTile("查看提示词详情", Icons.Outlined.Description, true, onPrompt)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolPanelTile("生成剧情摘要", Icons.Outlined.AutoStories, canSummarize, onSummarize)
+                ToolPanelTile("重建记忆索引", Icons.Outlined.Memory, canMemory, onMemory)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolPanelTile("导入聊天记录", Icons.Outlined.FileOpen, true, onImport)
+                ToolPanelTile("导出聊天记录", Icons.Outlined.SaveAlt, true, onExport)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RowScope.ToolPanelTile(label: String, icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = if (enabled) .55f else .25f),
+        contentColor = if (enabled) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f),
+        modifier = Modifier.weight(1f),
+    ) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** Chat media are plain files under filesDir; cache decoded bubbles so scrolling stays cheap. */
+private val chatMediaCache = object : android.util.LruCache<String, ImageBitmap>(16 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
+}
+
+@Composable
+private fun rememberChatMedia(path: String, maxDimension: Int): ImageBitmap? {
+    val context = LocalContext.current.applicationContext
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, path, maxDimension) {
+        value = withContext(Dispatchers.IO) { decodeChatMedia(context, path, maxDimension) }
+    }
+    return bitmap
+}
+
+private fun decodeChatMedia(context: android.content.Context, path: String, maxDimension: Int): ImageBitmap? {
+    val reference = path.trim().removePrefix("file://")
+    if (reference.isBlank() || reference.contains("..")) return null
+    if (reference.startsWith("http://", true) || reference.startsWith("https://", true)) return null
+    val key = "$reference@$maxDimension"
+    chatMediaCache.get(key)?.let { return it }
+    if (reference.startsWith("data:", true)) return runCatching {
+        val comma = reference.indexOf(',')
+        require(comma > 0 && reference.substring(0, comma).contains(";base64", true)) { "not base64 data" }
+        val bytes = android.util.Base64.decode(reference.substring(comma + 1), android.util.Base64.DEFAULT)
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "unreadable image" }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxDimension) sample *= 2
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("decode failed")
+        bitmap.asImageBitmap().also { chatMediaCache.put(key, it) }
+    }.getOrNull()
+    return runCatching {
+        val root = context.filesDir.canonicalFile
+        val file = File(reference).let { if (it.isAbsolute) it else File(root, reference) }.canonicalFile
+        require(file.toPath().startsWith(root.toPath()) && file.isFile) { "not chat media" }
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.path, bounds)
+        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "unreadable image" }
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxDimension) sample *= 2
+        val bitmap = android.graphics.BitmapFactory.decodeFile(file.path, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("decode failed")
+        bitmap.asImageBitmap().also { chatMediaCache.put(key, it) }
+    }.getOrNull()
 }
 
 private data class ChatScene(val image: ImageBitmap?, val accent: Color?)
@@ -393,10 +656,20 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
                         }
                     }
                 }
+                if ((message.extra["interrupted"] as? JsonPrimitive)?.booleanOrNull == true) {
+                    Text("回复已中断，可在聊天工具中重说", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
                 Surface(color = color,
                     shape = if (reading || square) RoundedCornerShape(0.dp) else if (user) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp),
                     modifier = if (reading) Modifier.fillMaxWidth() else Modifier.widthIn(max = 620.dp).fillMaxWidth(if (user) .78f else .84f)) {
                     Column(Modifier.padding(horizontal = if (reading) 0.dp else 14.dp, vertical = if (reading) 4.dp else 10.dp)) {
+                        if (message.image.isNotBlank()) {
+                            val attachment = rememberChatMedia(message.image, 1024)
+                            if (attachment != null) {
+                                Image(attachment, "附图", contentScale = ContentScale.Fit, modifier = Modifier.clip(RoundedCornerShape(12.dp)).fillMaxWidth().heightIn(max = 300.dp))
+                                Spacer(Modifier.height(8.dp))
+                            }
+                        }
                         val dark = (if (reading) MaterialTheme.colorScheme.background else color).luminance() < 0.5f
                         val quoteColor = if (dark) Color(0xFFFF9F43) else Color(0xFFA34B00)
                         val bracketColor = if (dark) Color(0xFF75B8FF) else Color(0xFF005EAD)
@@ -429,7 +702,7 @@ private fun MessageItem(message: ChatMessage, session: ChatSession, state: AppSt
                     }
                 }
             }
-            if (user && !reading) { Spacer(Modifier.width(8.dp)); Avatar(name, null, Modifier.size(36.dp)) }
+            if (user && !reading) { Spacer(Modifier.width(8.dp)); Avatar(name, state.preferences.userAvatarPath, Modifier.size(36.dp)) }
         }
     }
 }

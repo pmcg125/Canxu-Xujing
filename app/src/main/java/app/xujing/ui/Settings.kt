@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import app.xujing.BuildConfig
 import app.xujing.core.*
 
 @Composable
@@ -21,13 +22,31 @@ internal fun SettingsScreen(state: AppState, runtime: UiRuntime, actions: AppAct
     var name by remember(state.preferences.userName) { mutableStateOf(state.preferences.userName) }
     var persona by remember(state.preferences.persona) { mutableStateOf(state.preferences.persona) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(state.preferences.userName.ifBlank { "我" }, state.preferences.userAvatarPath)
+                Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                    Text(state.preferences.userName.ifBlank { "我" }, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("故事与资料保存在此设备", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f))
+                }
+                Icon(Icons.Outlined.Tune, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+        }
         CollapsibleSection("外观", "MD3 应用界面；角色卡的 HTML 与 CSS 保留作者样式。", initiallyExpanded = true) {
             ChoiceField("主题", state.preferences.darkMode, listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"), onChoose = { actions.savePreferences(state.preferences.copy(darkMode = it ?: "system")) })
             SettingSwitch("系统动态配色", "Android 12 及以上可使用壁纸配色。", state.preferences.dynamicColor) { actions.savePreferences(state.preferences.copy(dynamicColor = it)) }
             Text("默认正文字号 ${state.preferences.fontSize.toInt()}", style = MaterialTheme.typography.bodyLarge)
             Slider(value = state.preferences.fontSize, onValueChange = { actions.savePreferences(state.preferences.copy(fontSize = it)) }, valueRange = 13f..26f, steps = 12)
         }
-        CollapsibleSection("默认用户人设", "新会话使用这里的设定，可在每个会话中单独修改。") {
+        CollapsibleSection("默认人设", "新会话使用这里的设定，可在每个会话中单独修改。") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(name.ifBlank { "我" }, state.preferences.userAvatarPath)
+                Spacer(Modifier.width(12.dp))
+                Column(horizontalAlignment = Alignment.Start) {
+                    OutlinedButton(onClick = { actions.requestImport("useravatar") }) { Text(if (state.preferences.userAvatarPath == null) "选择头像" else "更换头像") }
+                    if (state.preferences.userAvatarPath != null) TextButton(onClick = { actions.savePreferences(state.preferences.copy(userAvatarPath = null)) }) { Text("移除头像") }
+                }
+            }
             OutlinedTextField(name, { name = it }, label = { Text("称呼") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             EditorText("人设描述", persona) { persona = it }
             OutlinedButton(onClick = { actions.savePreferences(state.preferences.copy(userName = name.ifBlank { "我" }, persona = persona)) }, enabled = name != state.preferences.userName || persona != state.preferences.persona) { Text("保存默认人设") }
@@ -69,7 +88,7 @@ internal fun SettingsScreen(state: AppState, runtime: UiRuntime, actions: AppAct
                 OutlinedButton(onClick = { actions.requestExport("settings") }, modifier = Modifier.weight(1f)) { Text("导出设置") }
             }
         }
-        CollapsibleSection("关于残叙") {
+        CollapsibleSection("关于", "版本 ${BuildConfig.VERSION_NAME}") {
             Text("故事和资料保存在此设备。模型回复由你配置的服务提供；本地嵌入模型仅用于记忆检索。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("资料格式兼容与脚本执行兼容分别演进。请保留原始备份，复杂角色卡的呈现取决于支持的脚本接口。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

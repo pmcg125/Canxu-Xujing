@@ -24,6 +24,14 @@ object PromptEngine {
             ?: session.connectionId ?: state.preferences.defaultConnectionId
         val connection = state.connections.find { it.id == connectionId }
             ?.let { GenerationSettings.connection(state, session, it, usePreset = mode != "summary") }
+        val avatarRefs = if (mode != "summary" && connection?.supportsVision == true) listOfNotNull(
+            state.preferences.userAvatarPath?.takeIf(String::isNotBlank),
+            selected?.avatarPath?.takeIf(String::isNotBlank),
+        ) else emptyList()
+        val avatarNames = if (avatarRefs.isEmpty()) emptyList() else buildList {
+            if (state.preferences.userAvatarPath?.isNotBlank() == true) add("用户【${session.userName}】")
+            if (selected?.avatarPath?.isNotBlank() == true) add("角色【${selected?.name}】")
+        }
         val presetDocument = state.library.find { it.enabled && it.kind == "preset" && it.id == session.presetId }
         val preset = presetDocument?.data?.let(::unwrap) ?: EmptyObject
         val regenerate = mode in setOf("regenerate", "swipe")
@@ -97,8 +105,10 @@ object PromptEngine {
                 val speaker = message.name ?: roles.find { it.id == message.speakerId }?.name
                 speaker?.let { "【$it】\n$processed" } ?: processed
             } else processed
-            PromptMessage(normalizeRole(message.role), content)
-        }.filter { it.content.isNotBlank() }.toMutableList()
+            // PiuPiu only sends images attached to user messages; summary never carries them.
+            val images = if (mode != "summary" && message.role == "user" && message.image.isNotBlank()) listOf(message.image) else emptyList()
+            PromptMessage(normalizeRole(message.role), content, images = images)
+        }.filter { it.content.isNotBlank() || it.images.isNotEmpty() }.toMutableList()
         data class Injection(val depth: Int, val order: Int, val message: PromptMessage)
         val injections = mutableListOf<Injection>()
         world.entries.filter { it.first.position == "depth" }.forEach { (entry, content) ->
@@ -149,6 +159,7 @@ object PromptEngine {
             val value = macros.expand(blocks[key].orEmpty())
             if (value.isNotBlank()) assembledBefore += PromptMessage("system", value)
         }
+        if (avatarNames.isNotEmpty()) assembledBefore += PromptMessage("system", "本次请求附带头像参考图，依次为：${avatarNames.joinToString("、")}。若用户消息另附图，附在最后。")
         if ("chatHistory" !in used) diagnostics += "预设未包含 chatHistory 标记，历史已追加到预设提示词之后。"
         if (mode == "continue") assembledAfter += PromptMessage("system", "继续上一条角色回复，从其末尾自然接续，不重复已有正文，不替用户发言。")
         if (mode == "impersonate") assembledAfter += PromptMessage("system", "本轮以用户【${session.userName}】的身份续写一条输入，保持用户人设与当前场景一致。")
@@ -165,6 +176,12 @@ object PromptEngine {
         }
         if (removed > 0) diagnostics += "按估算上下文预算裁去 $removed 条较旧消息。"
         if (fixed + historyCost > inputBudget) diagnostics += "提示词估算超出上下文预算；角色/世界书及最新消息未被截断，请扩大上下文或缩减资料。"
+        // Keep images only on the newest user message that survived the budget trim.
+        val latestUser = history.indexOfLast { it.role == "user" }
+        if (latestUser >= 0 && avatarRefs.isNotEmpty()) history[latestUser] = history[latestUser].copy(images = avatarRefs + history[latestUser].images)
+        history.indices.forEach { index ->
+            if (index != latestUser && history[index].images.isNotEmpty()) history[index] = history[index].copy(images = emptyList())
+        }
         val injectedHistory = history.toMutableList()
         // Descending depth means indices are based on the original history, unaffected by insertions.
         var inserted = 0
@@ -173,7 +190,7 @@ object PromptEngine {
             injectedHistory.add(index.coerceAtMost(injectedHistory.size), injection.message)
             inserted++
         }
-        val messages = (assembledBefore + injectedHistory + assembledAfter).filter { it.content.isNotBlank() }
+        val messages = (assembledBefore + injectedHistory + assembledAfter).filter { it.content.isNotBlank() || it.images.isNotEmpty() }
         diagnostics += "提示词 ${messages.size} 条，估算 ${messages.sumOf { estimatedTokens(it.content) + 4 }} tokens；不含远端分词差异。"
         return PromptBuild(messages, world.entries.map { it.first.title }, diagnostics.distinct(), if (mode == "summary") session.worldState else world.state, if (mode == "summary") session.variables else macros.variables)
     }
