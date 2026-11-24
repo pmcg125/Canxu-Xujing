@@ -112,7 +112,7 @@ private const val SHELL_STYLE =
  */
 private fun messageShellPage(snapshot:String,theme:JsonObject,frameDocument:String,shellRuntime:String):String =
     "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta charset=\"utf-8\"><style>"+SHELL_STYLE+"</style></head><body>"+
-    "<div class=\"mes_text\"><iframe id=\"xujing-message-frame\" title=\"角色卡消息\"></iframe></div>"+
+    "<div class=\"mes_text\"><iframe id=\"xujing-message-frame\" title=\"角色卡消息\" scrolling=\"no\"></iframe></div>"+
     "<textarea id=\"send_textarea\" aria-hidden=\"true\" tabindex=\"-1\"></textarea>"+
     "<script>window.__XUJING_CONTEXT__="+snapshot+";window.__XUJING_THEME__="+theme+";window.__XUJING_MESSAGE_HTML__="+jsLiteral(frameDocument)+";</script>"+
     "<script>"+shellRuntime+"</script></body></html>"
@@ -158,7 +158,7 @@ fun CardMessage(content:String,session:ChatSession,message:ChatMessage,state:App
             settings.setSupportMultipleWindows(false)
             settings.mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW
             addJavascriptInterface(object {
-                @JavascriptInterface fun height(value:Int) { main.post { height=value.coerceIn(28,2400) } }
+                @JavascriptInterface fun height(value:Int) { main.post { height=value.coerceIn(28,12000) } }
                 @JavascriptInterface fun request(token:String,id:String,method:String,payload:String) {
                     if(!scriptsAllowed) return
                     main.post {

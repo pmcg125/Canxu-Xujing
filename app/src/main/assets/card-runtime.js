@@ -596,8 +596,8 @@
     if (oldVariables !== JSON.stringify(next.variables || {}) && !variableWrites) eventEmit('mag_variable_update_ended', clone(next.variables || {})).catch(console.error);
     stateSynchronized = true;
   };
-  // scrollHeight/offsetHeight are clamped to the WebView viewport, so a short card can never shrink.
-  // Measure the content box of the body's children instead.
+  // getBoundingClientRect alone misses fixed-height scroll containers (100vh / fixed / overflow:auto).
+  // Use scrollHeight only when the element actually overflows, so short cards can still shrink.
   const resize = () => {
     const body = document.body;
     if (!body) return;
@@ -606,7 +606,10 @@
     let bottom = box.top + (parseFloat(style.paddingTop) || 0);
     for (const child of body.children) {
       const rect = child.getBoundingClientRect();
-      if (rect.width > 0 || rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+      if (rect.width <= 0 && rect.height <= 0) continue;
+      const scroll = child.scrollHeight || 0;
+      const inner = scroll > (child.clientHeight || 0) + 1 ? Math.max(rect.height, scroll) : rect.height;
+      bottom = Math.max(bottom, rect.top + inner);
     }
     let height = Math.ceil(bottom - box.top + (parseFloat(style.paddingBottom) || 0));
     if (height < 24) height = 24;

@@ -175,7 +175,7 @@ private fun AppPages(
     val importKind = when {
         browsing -> "auto"
         section == MainPage.Stories -> "auto"
-        section == MainPage.Library -> if (hubTab == "roles") "role" else "auto"
+        section == MainPage.Library -> if (hubTab == "roles") "role" else hubTab
         else -> null
     }
     Scaffold(

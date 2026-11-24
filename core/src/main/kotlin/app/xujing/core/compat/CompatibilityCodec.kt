@@ -322,10 +322,18 @@ object CompatibilityCodec {
         val obj = parsed as? JsonObject
         if (obj != null) {
             val body = cardBody(obj)
-            if (obj.text("spec") in setOf("chara_card_v2", "chara_card_v3", "character_card_v2", "character_card_v3") ||
-                body.containsKey("first_mes") || (body.containsKey("name") && (body.containsKey("description") || body.containsKey("personality")))) return "role"
+            val cardSpec = obj.text("spec") in setOf("chara_card_v2", "chara_card_v3", "character_card_v2", "character_card_v3")
+            val cardFields = listOf("first_mes", "firstMessage", "alternate_greetings", "mes_example", "examples",
+                "personality", "scenario", "system_prompt", "post_history_instructions")
+            val hasCardFields = cardFields.any { body.containsKey(it) || obj.containsKey(it) }
+            val hasEntries = obj.containsKey("entries") || body.containsKey("entries") ||
+                obj.containsKey("character_book") || body.containsKey("character_book")
+            // 角色卡优先，但只在有角色专属字段时成立；带 character_book 的角色卡不能被误判成世界书。
+            if (cardSpec || hasCardFields || (obj["data"] as? JsonObject)?.containsKey("character_book") == true) return "role"
             if (obj["history"] is JsonArray || obj["messages"] is JsonArray) return "chat"
-            if (obj.containsKey("entries") || obj.containsKey("character_book")) return "worldbook"
+            // PiuPiu 世界书固定带 name/description/entries，不能再用 name+description 判成角色卡。
+            if (hasEntries) return "worldbook"
+            if (body.containsKey("name") && (body.containsKey("description") || body.containsKey("personality"))) return "role"
             if (obj.containsKey("regex_scripts") || obj.containsKey("findRegex") || obj.containsKey("scriptName")) return "regex"
             if (obj.containsKey("prompt_order") || obj.containsKey("prompts") || obj.containsKey("preset")) return "preset"
             if (obj.containsKey("styles") || obj.containsKey("customStyles")) return "style"

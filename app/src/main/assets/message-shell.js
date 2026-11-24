@@ -114,6 +114,7 @@
   });
 
   /* ---------------- height ---------------- */
+  const MAX_HEIGHT = 12000;
   let reported = 0, explicit = 0, measureTimer = 0;
 
   const measureContent = () => {
@@ -127,7 +128,13 @@
       let bottom = box.top + (parseFloat(style.paddingTop) || 0);
       for (const child of body.children) {
         const rect = child.getBoundingClientRect();
-        if (rect.width > 0 || rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+        if (rect.width <= 0 && rect.height <= 0) continue;
+        // A fixed-height scroll container (100vh / fixed / overflow:auto) only exposes its
+        // viewport through getBoundingClientRect. Use scrollHeight when it overflows so the
+        // message grows instead of hiding the rest behind an inner scrollbar.
+        const scroll = child.scrollHeight || 0;
+        const inner = scroll > (child.clientHeight || 0) + 1 ? Math.max(rect.height, scroll) : rect.height;
+        bottom = Math.max(bottom, rect.top + inner);
       }
       // Same measurement as card-runtime's resize(), so the two never fight over the height.
       return Math.ceil(bottom - box.top + (parseFloat(style.paddingBottom) || 0));
@@ -135,7 +142,7 @@
   };
 
   const applyHeight = value => {
-    const next = Math.max(24, Math.min(2400, Math.round(Number(value) || 0)));
+    const next = Math.max(24, Math.min(MAX_HEIGHT, Math.round(Number(value) || 0)));
     if (!next) return;
     reported = next;
     const current = frame ? (parseFloat(frame.style.height) || 0) : 0;
@@ -168,7 +175,7 @@
     if (!value) return;
     const rounded = Math.round(value);
     if (Math.abs(rounded - reported) <= 2) return; // written by this shell
-    explicit = Math.max(24, Math.min(2400, rounded));
+    explicit = Math.max(24, Math.min(MAX_HEIGHT, rounded));
     scheduleMeasure();
   };
 
@@ -187,6 +194,7 @@
   };
 
   if (frame) {
+    try { frame.setAttribute('scrolling', 'no'); } catch (error) { console.error(error); }
     try { new MutationObserver(syncExplicit).observe(frame, { attributes: true, attributeFilter: ['style', 'height'] }); }
     catch (error) { console.error(error); }
     frame.addEventListener('load', () => {
