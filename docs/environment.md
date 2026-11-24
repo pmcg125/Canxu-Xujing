@@ -186,3 +186,12 @@ python D:\Canxu-project\Xujing\tools\mock_openai.py --port 8765 --capture tools\
 | 文件选择器打开成文本编辑器 | 点到了缩略图；点文件名 |
 | 脚本按钮/面板不出现 | 全局「允许角色卡脚本」或会话「运行角色独立脚本」未开 |
 | 预设正则/预设脚本不生效 | 预设未选中、脚本被禁用、条目不在 `prompt_order`，或正则 `placement` 不匹配 |
+
+## 10. 仓库与推送
+
+- 公开仓库：<https://github.com/pmcg125/Canxu-Xujing>
+- 默认分支：`master`
+- 克隆：`git clone https://github.com/pmcg125/Canxu-Xujing.git`
+- 本仓库提交邮箱统一使用 `94784427+pmcg125@users.noreply.github.com`，避免 GitHub 的 GH007 邮箱隐私拦截。
+- `master` 已跟踪 `origin/master`，改完直接 `git push`。
+- `dist/`、`local.properties`、签名文件、构建缓存、`.codegraph/`、`*.log` 不入库；发布包与哈希通过 `dist/SHA256SUMS.txt` 单独核对。

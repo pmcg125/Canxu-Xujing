@@ -6,6 +6,13 @@ Android 优先的本地角色扮演应用。原生 Jetpack Compose Material 3 �
 
 本机 `dist` 目录提供 ARM64 开发 APK、通用开发 APK、其他架构分包、新项目源码归档与 SHA-256 校验清单。ARM64 包约 27.7 MiB，最低 Android 8.0。
 
+## 仓库
+
+- 公开仓库：<https://github.com/pmcg125/Canxu-Xujing>
+- 默认分支：`master`
+- 克隆：`git clone https://github.com/pmcg125/Canxu-Xujing.git`
+- 源码、文档与提交记录以该仓库为准；`dist/`、本机 SDK 路径、签名文件、构建缓存和日志不入库。
+
 ## 首版功能
 
 - 本地角色、用户人设、单角色和多角色会话，气泡 / 阅读模式切换。

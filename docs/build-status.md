@@ -18,6 +18,10 @@
 
 源码归档为 `dist/xujing-0.2.1-source.zip`，不包含构建缓存、本机 SDK 路径配置、签名密钥、APK 或模型权重。`README.md` 记录本机构建方法。
 
+## 仓库
+
+公开仓库：<https://github.com/pmcg125/Canxu-Xujing>，默认分支 `master`。源码、文档和提交记录以该仓库为准；`dist/`、本机 SDK 路径、签名文件和构建日志不入库。
+
 ## 尚未验证
 
 模拟器已通过本机模拟 API 验证聊天请求、普通响应和流式响应。真实模型推理、外部 API 连通性、复杂 TavernHelper/MVU 角色卡和 PiuPiu 资料双向回导仍需后续验证；参见 `compatibility.md`。
