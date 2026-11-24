@@ -97,11 +97,14 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
         if (kind == "worldbook") WorldbookEntriesEditor(parsed.getOrNull()) { next ->
             json = AppJson.encodeToString(JsonElement.serializer(), next)
         }
+        if (kind == "preset") key(document.id) { PresetEntriesEditor(parsed.getOrNull()) { next ->
+            json = AppJson.encodeToString(JsonElement.serializer(), next)
+        } }
         if (huge) {
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("文档较大（${json.length} 字符），已关闭原始 JSON 编辑", style = MaterialTheme.typography.titleSmall)
-                    Text(if (kind == "worldbook") "请用上方的条目列表逐条编辑；需要整体替换时可导出后在电脑上编辑再导入。" else "在输入框里渲染数 MB 文本会让界面卡死。请先用「导出」把资料存成文件，在电脑上编辑后再导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (kind == "worldbook" || kind == "preset") "请用上方的条目列表逐条编辑；需要整体替换时可导出后在电脑上编辑再导入。" else "在输入框里渲染数 MB 文本会让界面卡死。请先用「导出」把资料存成文件，在电脑上编辑后再导入；当前内容保持不变。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (kind != "worldbook") SelectionContainer {
@@ -119,11 +122,22 @@ internal fun DocumentEditor(document: LibraryDocument, onClose: () -> Unit, onSa
 
 private fun templateFor(kind: String): String = when (kind) {
     "worldbook" -> """{"entries":{"0":{"uid":0,"key":["关键词"],"keysecondary":[],"comment":"新条目","content":"在这里填写世界设定","constant":false,"selective":false,"enabled":true,"disable":false,"order":100,"position":0,"depth":4}}}"""
-    "preset" -> """{"name":"新预设","prompts":[{"identifier":"main","name":"系统指令","role":"system","content":"请忠实扮演角色，保持剧情与人物的一致性。","enabled":true}],"prompt_order":[{"character_id":100001,"order":[{"identifier":"main","enabled":true},{"identifier":"charDescription","enabled":true},{"identifier":"charPersonality","enabled":true},{"identifier":"scenario","enabled":true},{"identifier":"chatHistory","enabled":true}]}]}"""
+    "preset" -> basicPresetTemplate()
     "regex" -> """{"scripts":[{"id":"new-regex","scriptName":"新正则","findRegex":"需要匹配的内容","replaceString":"替换内容","placement":[2],"disabled":false,"markdownOnly":false,"promptOnly":false}]}"""
     "persona" -> """{"name":"我","description":"在这里填写你的角色设定"}"""
     else -> """{"name":"新文风","content":"在这里填写写作风格要求"}"""
 }.let { AppJson.encodeToString(JsonElement.serializer(), AppJson.parseToJsonElement(it)) }
+
+private fun basicPresetTemplate(): String {
+    val nodes = listOf("main" to "系统指令", "worldInfoBefore" to "前置世界书", "personaDescription" to "用户人设", "charDescription" to "角色描述", "charPersonality" to "角色性格", "scenario" to "场景", "worldInfoAfter" to "后置世界书", "dialogueExamples" to "对话示例", "chatHistory" to "聊天历史", "jailbreak" to "后置指令")
+    return AppJson.encodeToString(JsonElement.serializer(), buildJsonObject {
+        put("prompts", JsonArray(nodes.map { (id, name) -> buildJsonObject {
+            put("identifier", id); put("name", name); put("role", "system"); put("system_prompt", true)
+            put("marker", id != "main" && id != "jailbreak"); put("content", ""); put("injection_position", 0); put("injection_depth", 0); put("injection_order", 100)
+        } }))
+        put("prompt_order", buildJsonArray { add(buildJsonObject { put("character_id", 100001); put("order", JsonArray(nodes.map { (id, _) -> buildJsonObject { put("identifier", id); put("enabled", true) } })) }) })
+    })
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

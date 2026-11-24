@@ -186,6 +186,14 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
         fun named()=if(raw=="in_use") inUse() else CardLibrary.preset(state,presetName(raw))
         fun put(document:LibraryDocument)=state.copy(library=if(state.library.any { it.id==document.id }) state.library.map { if(it.id==document.id) document else it } else state.library+document)
         fun data(name:String)=payload["data"]?.takeUnless { it is JsonNull } ?: error("缺少预设数据：$name")
+        fun preserveWrapper(existing:LibraryDocument?, incoming:JsonElement):JsonElement {
+            if(existing==null || existing.data !is JsonObject) return incoming
+            val original=existing.data
+            val body=app.xujing.core.compat.PresetDocuments.body(original)
+            return if(body!=original && incoming is JsonObject)
+                app.xujing.core.compat.PresetDocuments.replaceBody(original,app.xujing.core.compat.PresetDocuments.body(incoming))
+            else incoming
+        }
         return when(method) {
             "createPreset" -> {
                 val name=presetName(raw)
@@ -199,20 +207,20 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 val existing=CardLibrary.preset(state,name)
                 // PiuPiu copies the active preset when data is omitted, not the target's old data.
                 val incoming=payload["data"]?.takeUnless { it is JsonNull } ?: inUse()?.data ?: existing?.data ?: EmptyObject
-                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=incoming)
+                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=preserveWrapper(existing,incoming))
                 PresetChange(put(document),document,existing==null)
             }
             "setPreset" -> {
                 val existing=resolve()
                 require(existing!=null || (raw.isNotEmpty() && raw!="in_use")) { "当前会话没有预设" }
                 val name=existing?.name ?: presetName(raw)
-                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=data(name))
+                val document=(existing ?: LibraryDocument(name=name,kind="preset")).copy(data=preserveWrapper(existing,data(name)))
                 PresetChange(put(document),document,existing==null)
             }
             "replacePreset" -> {
                 val existing=resolve()
                 requireNotNull(existing) { "预设不存在：${raw.ifEmpty { "in_use" }}" }
-                val document=existing.copy(data=data(existing.name))
+                val document=existing.copy(data=preserveWrapper(existing,data(existing.name)))
                 PresetChange(put(document),document,false)
             }
             "updatePreset" -> {
@@ -220,8 +228,9 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 val existing=CardLibrary.preset(state,name)
                 requireNotNull(existing) { "预设不存在：$name" }
                 val patch=payload["patch"] as? JsonObject ?: error("预设补丁需要 JSON 对象")
-                val current=existing.data as? JsonObject ?: error("预设内容不是对象：$name")
-                val document=existing.copy(data=JsonObject(current+patch))
+                require(existing.data is JsonObject) { "预设内容不是对象：$name" }
+                val current=app.xujing.core.compat.PresetDocuments.body(existing.data)
+                val document=existing.copy(data=preserveWrapper(existing,JsonObject(current+patch)))
                 PresetChange(put(document),document,false)
             }
             "deletePreset" -> {
@@ -249,7 +258,7 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
                 change.document?.let { document ->
                     put("id",JsonPrimitive(document.id))
                     put("name",JsonPrimitive(document.name))
-                    put("data",document.data)
+                    put("data",app.xujing.core.compat.PresetDocuments.body(document.data))
                 }
                 put("created",JsonPrimitive(change.created))
             }
@@ -1100,16 +1109,20 @@ class AppController(application:Application):AndroidViewModel(application),AppAc
             "loadPreset" -> {
                 val id=obj.text("name").ifBlank { s.presetId.orEmpty() }
                 val preset=CardLibrary.preset(state.value,id) ?: error("预设不存在：$id")
-                buildJsonObject { put("id",preset.id); put("name",preset.name); put("data",preset.data) }
+                val selected=commitCardLibrary(s.id,"selectPreset",buildJsonObject { put("id",preset.id) })
+                require(selected["value"]?.jsonPrimitive?.booleanOrNull!=false) { "无法选择预设：$id" }
+                val current=CardLibrary.preset(state.value,preset.id) ?: error("预设不存在：$id")
+                buildJsonObject { put("id",current.id); put("name",current.name); put("data",app.xujing.core.compat.PresetDocuments.body(current.data)) }
             }
             "getPresetSettings" -> {
                 val name=obj.text("name").ifBlank { s.presetId.orEmpty() }
-                CardLibrary.preset(state.value,name)?.data ?: buildJsonObject { put("error","预设不存在：$name") }
+                val preset=CardLibrary.preset(state.value,name) ?: error("预设不存在：$name")
+                app.xujing.core.compat.PresetDocuments.body(preset.data)
             }
             "getPresetList" -> {
                 val presets=CardLibrary.presets(state.value)
                 buildJsonObject {
-                    put("presets",buildJsonArray { presets.forEach { add(it.data) } })
+                    put("presets",buildJsonArray { presets.forEach { add(app.xujing.core.compat.PresetDocuments.body(it.data)) } })
                     put("preset_names",buildJsonObject { presets.forEachIndexed { index,d -> put(d.name,JsonPrimitive(index)) } })
                     put("names",JsonArray(presets.map { JsonPrimitive(it.name) }))
                     put("ids",JsonArray(presets.map { JsonPrimitive(it.id) }))

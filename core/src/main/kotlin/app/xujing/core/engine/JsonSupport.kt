@@ -30,7 +30,9 @@ internal fun unwrap(value: JsonElement): JsonObject {
     val root = value.objectOrEmpty()
     val data = root["data"] as? JsonObject
     val config = root["config"] as? JsonObject
+    val preset = root["preset"] as? JsonObject
     return when {
+        preset != null && root.keys.none { it in setOf("entries", "prompts", "prompt_order", "findRegex", "find_regex") } -> preset
         data != null && (root.containsKey("spec") || root.size <= 3) -> data
         config != null && root.keys.none { it in setOf("entries", "prompts", "findRegex", "find_regex") } -> config
         else -> root

@@ -156,11 +156,17 @@ internal class MacroProcessor(
             "charid" -> role?.id.orEmpty()
             "description", "chardescription" -> role?.description.orEmpty()
             "personality", "charpersonality" -> role?.personality.orEmpty()
-            "scenario" -> role?.scenario.orEmpty()
+            "scenario", "charscenario" -> role?.scenario.orEmpty()
             "persona", "personadescription" -> session.persona.ifBlank { state.preferences.persona }
-            "mesexamples", "dialogueexamples" -> role?.examples.orEmpty()
-            "system", "systemprompt" -> role?.systemPrompt.orEmpty()
-            "original" -> role?.systemPrompt.orEmpty()
+            "mesexamples", "mesexamplesraw", "dialogueexamples" -> role?.examples.orEmpty()
+            "system", "systemprompt", "charprompt" -> role?.systemPrompt.orEmpty()
+            "charinstruction", "charjailbreak" -> role?.postHistoryInstructions.orEmpty()
+            "chardepthprompt" -> roleData(role).let { data ->
+                data.str("depthPrompt", "depth_prompt").ifBlank {
+                    data["extensions"].objectOrEmpty()["depth_prompt"].objectOrEmpty().str("prompt")
+                }
+            }
+            "original" -> ""
             "lastmessage" -> session.messages.lastOrNull()?.content.orEmpty()
             "lastusermessage", "input" -> session.messages.lastOrNull { it.role == "user" }?.content.orEmpty()
             "lastcharmessage" -> session.messages.lastOrNull { it.role == "assistant" }?.content.orEmpty()

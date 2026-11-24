@@ -117,24 +117,27 @@ object PromptEngine {
         val authorNote = listOf(worldText("author_before"), session.extra.str("authorNote", "author_note"), worldText("author_after")).filter(String::isNotBlank).joinToString("\n\n")
         if (authorNote.isNotBlank()) injections += Injection(session.extra.num("authorNoteDepth", "author_note_depth", default = 4).coerceAtLeast(0), 0, PromptMessage("system", macros.expand(authorNote)))
         val prompts = records(preset["prompts"], "prompts").map { it.second }
-        val promptById = prompts.associateBy { it.str("identifier", "id") }
+        val promptById = prompts.distinctBy { it.str("identifier", "id") }.associateBy { it.str("identifier", "id") }
         val orders = preset["prompt_order"] as? JsonArray
         val chosenOrder = orders?.mapNotNull { it as? JsonObject }?.let { list ->
-            list.find { it.str("character_id") == selected?.id } ?: list.find { it.str("character_id") == "100001" } ?: list.firstOrNull()
+            list.find { it.str("character_id") == "100001" }
+                ?: list.find { (it["order"] as? JsonArray)?.isNotEmpty() == true }
+                ?: list.firstOrNull()
         }
         val orderEntries = records(chosenOrder?.get("order")).map { it.second }
-        val enabledOrder = if (orderEntries.isNotEmpty()) orderEntries.filter { it.flag("enabled", default = true) }.map { it.str("identifier", "id") }
-            else if (prompts.isNotEmpty()) prompts.filter { it.flag("enabled", default = true) }.map { it.str("identifier", "id") }
+        // An imported preset's order is also its activation whitelist, including an empty order.
+        val enabledOrder = if (presetDocument != null) orderEntries.filter { it.flag("enabled", default = true) }.map { it.str("identifier", "id") }
             else blocks.keys.toList()
         val assembledBefore = mutableListOf<PromptMessage>()
         val assembledAfter = mutableListOf<PromptMessage>()
+        val presetBefore = mutableListOf<Pair<Int, List<PromptMessage>>>()
+        val presetAfter = mutableListOf<Pair<Int, List<PromptMessage>>>()
         var historyReached = false
         val used = mutableSetOf<String>()
         fun appendBlock(identifier: String, prompt: JsonObject?) {
             if (identifier in used) return
             used += identifier
             if (prompt != null) {
-                if (!prompt.flag("enabled", default = true)) return
                 val triggers = prompt.first("injection_trigger", "injectionTrigger").strings()
                 if (triggers.isNotEmpty() && mode !in triggers && "all" !in triggers) return
             }
@@ -145,15 +148,29 @@ object PromptEngine {
             val content = macros.expand(cardOverride?.takeIf(String::isNotBlank) ?: if (marker) blocks[identifier].orEmpty() else prompt?.str("content") ?: blocks[identifier].orEmpty())
             if (content.isBlank()) return
             val messageRole = normalizeRole(prompt?.str("role", default = "system") ?: "system")
-            if (prompt?.num("injection_position", "injectionPosition") == 1) {
-                injections += Injection(prompt.num("injection_depth", "injectionDepth", default = 4).coerceAtLeast(0), prompt.num("injection_order", "injectionOrder", default = 100), PromptMessage(messageRole, content))
+            val order = prompt?.num("injection_order", "injectionOrder") ?: 0
+            val depth = prompt?.num("injection_depth", "injectionDepth")?.coerceAtLeast(0) ?: 0
+            val blockMessages = if (identifier == "dialogueExamples") parseExamples(content, session.userName, selected?.name.orEmpty())
+                else listOf(PromptMessage(messageRole, content))
+            if (presetDocument != null) {
+                when {
+                    // PiuPiu appends in-chat prompts after history; relative prompts may use depth.
+                    prompt?.num("injection_position", "injectionPosition") == 1 -> presetAfter += order to blockMessages
+                    depth > 0 -> blockMessages.forEach { injections += Injection(depth, order, it) }
+                    else -> presetBefore += order to blockMessages
+                }
             } else {
                 val destination = if (historyReached) assembledAfter else assembledBefore
-                if (identifier == "dialogueExamples") destination += parseExamples(content, session.userName, selected?.name.orEmpty())
-                else destination += PromptMessage(messageRole, content)
+                destination += blockMessages
             }
         }
-        enabledOrder.forEach { appendBlock(it, promptById[it]) }
+        enabledOrder.forEach { identifier ->
+            if (presetDocument == null || identifier in promptById) appendBlock(identifier, promptById[identifier])
+            else diagnostics += "预设顺序引用了不存在的条目：$identifier。"
+        }
+        // Stable sorting keeps prompt_order as the tie breaker for equal injection_order values.
+        assembledBefore += presetBefore.sortedBy { it.first }.flatMap { it.second }
+        assembledAfter += presetAfter.sortedBy { it.first }.flatMap { it.second }
         // Runtime state and local group semantics remain present even in older imported presets.
         listOf("group_base", "summary", "memory", "variables", "style").filter { it !in used }.forEach { key ->
             val value = macros.expand(blocks[key].orEmpty())

@@ -49,7 +49,9 @@ object CompatibilityCodec {
         put("xujing_session", AppJson.encodeToJsonElement(session))
     }))
 
-    fun exportDocument(document: LibraryDocument): ByteArray = jsonBytes(document.data)
+    fun exportDocument(document: LibraryDocument): ByteArray = jsonBytes(
+        if (document.kind == "preset") PresetDocuments.body(document.data) else document.data
+    )
 
     /** PiuPiu settings remain in their original envelope; Xujing preferences use an extension. */
     fun exportSettings(state: AppState): ByteArray {
@@ -92,6 +94,15 @@ object CompatibilityCodec {
             val docs = state.library.filter { it.kind == kind && it.extra.text("xujing_session_id").isEmpty() }
             val ids = numericIds(docs.map { it.id })
             return JsonArray(docs.map { document ->
+                if (kind == "preset") {
+                    val envelope = document.extra["piupiuPresetEnvelope"] as? JsonObject
+                        ?: (document.data as? JsonObject)?.takeIf { it["preset"] is JsonObject } ?: EmptyObject
+                    return@map JsonObject(envelope.toMutableMap().apply {
+                        put("id", JsonPrimitive(ids.getValue(document.id)))
+                        put("name", JsonPrimitive(document.name))
+                        put("preset", PresetDocuments.body(document.data))
+                    })
+                }
                 val value = document.data as? JsonObject ?: buildJsonObject {
                     put(if (kind == "style") "content" else "data", document.data)
                 }
@@ -304,7 +315,7 @@ object CompatibilityCodec {
     private fun documentBundle(fileName: String, parsed: JsonElement, kind: String): ImportBundle {
         val obj = parsed as? JsonObject ?: EmptyObject
         val document = LibraryDocument(id = obj.text("id").ifBlank { newId() }, name = obj.text("name", obj.text("title", stem(fileName))), kind = kind, data = parsed)
-        return ImportBundle(library = listOf(document))
+        return ImportBundle(library = listOf(document), warnings = if (kind == "preset") PresetDocuments.diagnostics(parsed) else emptyList())
     }
 
     private fun detectKind(fileName: String, parsed: JsonElement): String {
@@ -392,8 +403,13 @@ object CompatibilityCodec {
                 val obj = value as? JsonObject ?: EmptyObject
                 val originalId = obj.text("id")
                 documents += LibraryDocument(id = if (originalId.isBlank()) newId() else "$kind:$originalId",
-                    name = obj.text("name", obj.text("title", "$prefix ${index + 1}")), kind = kind, data = value,
-                    extra = buildJsonObject { put("piupiuId", originalId); put("source", "settings"); if (kind in setOf("worldbook", "regex")) put("global", true) })
+                    name = obj.text("name", obj.text("title", "$prefix ${index + 1}")), kind = kind,
+                    data = if (kind == "preset") PresetDocuments.body(value) else value,
+                    extra = buildJsonObject {
+                        put("piupiuId", originalId); put("source", "settings")
+                        if (kind in setOf("worldbook", "regex")) put("global", true)
+                        if (kind == "preset" && obj["preset"] is JsonObject) put("piupiuPresetEnvelope", obj)
+                    })
             }
         }
         add(settings["globalWorldBooks"] ?: settings["globalWorldBook"], "worldbook", "世界书")

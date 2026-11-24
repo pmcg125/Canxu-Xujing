@@ -11,3 +11,4 @@ tools/mock-api-captures/
 .codegraph/
 hs_err_pid*.log
 replay_pid*.log
+*.log

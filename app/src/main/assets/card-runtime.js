@@ -137,31 +137,69 @@
     const record = await request('loadPreset', { name: key });
     rememberPreset(record.name || key, record.data);
     if (record.id) presetCache.set(record.id, clone(record.data));
-    return clone(record.data);
+    context.activePresetId = record.id;
+    await eventEmit('preset_changed', record.name, record.id);
+    await eventEmit('oai_preset_changed_after', record.name);
+    return true;
   };
   const getPresetSettings = name => {
     const data = presetData(name);
     if (data == null) throw new Error('预设尚未加载：' + (presetNameOf(name) || '未选择预设'));
     return clone(data);
   };
-  const presetSampleKeys = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'openai_max_tokens', 'max_tokens', 'seed', 'stop', 'n', 'min_p', 'top_a', 'repetition_penalty', 'temp_openai', 'top_p_openai', 'top_k_openai', 'frequency_penalty_openai', 'presence_penalty_openai', 'max_tokens_openai', 'freq_pen_openai', 'pres_pen_openai', 'repetition_penalty_openai', 'min_p_openai', 'top_a_openai', 'openai_max_context', 'names_behavior', 'reasoning_effort', 'squash_system_messages', 'stream_openai', 'wrap_in_quotes'];
-  const presetSettings = data => {
-    const settings = {};
-    if (data && typeof data === 'object') for (const key of presetSampleKeys) if (data[key] !== undefined) settings[key] = clone(data[key]);
-    return settings;
+  const numeric = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const rawPresetSettings = data => {
+    const keys = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'openai_max_tokens', 'max_tokens', 'seed', 'stop', 'n', 'min_p', 'top_a', 'repetition_penalty', 'temp_openai', 'top_p_openai', 'top_k_openai', 'frequency_penalty_openai', 'presence_penalty_openai', 'max_tokens_openai', 'freq_pen_openai', 'pres_pen_openai', 'repetition_penalty_openai', 'min_p_openai', 'top_a_openai', 'openai_max_context', 'names_behavior', 'reasoning_effort', 'squash_system_messages', 'stream_openai', 'wrap_in_quotes'];
+    const result = {};
+    for (const key of keys) if (data?.[key] !== undefined) result[key] = clone(data[key]);
+    return result;
+  };
+  const presetSettings = (data = {}) => {
+    data = data || {};
+    return ({
+    max_context: numeric(data.openai_max_context, 0),
+    max_completion_tokens: numeric(data.openai_max_tokens, 0),
+    reply_count: numeric(data.n, 1),
+    should_stream: data.stream_openai === true,
+    temperature: numeric(data.temp_openai ?? data.temperature, 1),
+    frequency_penalty: numeric(data.freq_pen_openai ?? data.frequency_penalty, 0),
+    presence_penalty: numeric(data.pres_pen_openai ?? data.presence_penalty, 0),
+    repetition_penalty: numeric(data.repetition_penalty_openai ?? data.repetition_penalty, 1),
+    top_p: numeric(data.top_p_openai ?? data.top_p, 1),
+    min_p: numeric(data.min_p_openai ?? data.min_p, 0),
+    top_k: numeric(data.top_k_openai ?? data.top_k, 0),
+    top_a: numeric(data.top_a_openai ?? data.top_a, 0),
+    seed: numeric(data.seed, -1),
+    squash_system_messages: data.squash_system_messages === true,
+    reasoning_effort: String(data.reasoning_effort || 'auto'),
+    request_thoughts: data.show_thoughts === true,
+    request_images: data.request_images === true,
+    enable_function_calling: data.function_calling === true,
+    enable_web_search: data.enable_web_search === true,
+    allow_sending_images: data.image_inlining === true ? String(data.inline_image_quality || 'auto') : 'disabled',
+    allow_sending_videos: data.video_inlining === true,
+    character_name_prefix: ({ '-1': 'none', 0: 'default', 1: 'completion', 2: 'content' })[String(numeric(data.names_behavior, -1))] || 'none',
+    wrap_user_messages_in_quotes: data.wrap_in_quotes === true,
+    });
   };
   const presetOrder = data => {
     const groups = Array.isArray(data?.prompt_order) ? data.prompt_order : [];
-    return groups.find(group => group && group.character_id === '100001' && Array.isArray(group.order)) ||
+    return groups.find(group => group && String(group.character_id) === '100001' && Array.isArray(group.order)) ||
       groups.find(group => group && Array.isArray(group.order) && group.order.length) ||
       groups.find(group => group && Array.isArray(group.order)) || null;
   };
-  const convertPresetPrompt = prompt => ({
-    id: prompt.identifier ?? prompt.id, name: prompt.name ?? '', role: prompt.role ?? 'system', content: prompt.content ?? '',
-    enabled: prompt.enabled !== false,
-    position: { type: prompt.injection_position === 1 ? 'in_chat' : 'relative', depth: prompt.injection_depth ?? 0, order: prompt.injection_order ?? 100 },
-    ...(prompt.extra && typeof prompt.extra === 'object' && !Array.isArray(prompt.extra) ? { extra: clone(prompt.extra) } : {}),
-  });
+  const markerIds = new Set(['worldInfoBefore', 'personaDescription', 'charDescription', 'charPersonality', 'scenario', 'worldInfoAfter', 'dialogueExamples', 'chatHistory']);
+  const systemPromptIds = new Set(['main', 'nsfw', 'jailbreak', 'enhanceDefinitions']);
+  const convertPresetPrompt = (prompt, enabled = prompt.enabled !== false) => {
+    const marker = prompt.marker === true, systemPrompt = prompt.system_prompt === true && !marker;
+    const result = { id: prompt.identifier ?? prompt.id, name: prompt.name || 'unnamed', enabled, role: prompt.role || 'system' };
+    if (!systemPrompt) result.position = Number(prompt.injection_position) === 1
+      ? { type: 'in_chat', depth: numeric(prompt.injection_depth, 4), order: numeric(prompt.injection_order, 100) }
+      : { type: 'relative' };
+    if (!marker) result.content = typeof prompt.content === 'string' ? prompt.content : '';
+    if (prompt.extra && typeof prompt.extra === 'object' && !Array.isArray(prompt.extra)) result.extra = clone(prompt.extra);
+    return result;
+  };
   // Match TavernHelper.getPreset in PiuPiu: convert raw OpenAI presets into the exposed prompt shape.
   const convertPreset = data => {
     const source = data && typeof data === 'object' ? data : {}, prompts = Array.isArray(source.prompts) ? source.prompts : [];
@@ -169,13 +207,98 @@
     prompts.forEach(prompt => { const id = prompt?.identifier ?? prompt?.id; if (id != null && !byIdentifier.has(id)) byIdentifier.set(id, prompt); });
     const used = new Set(), selected = [], unused = [], order = presetOrder(source)?.order, entries = Array.isArray(order) ? order : [];
     for (const entry of entries) {
-      if (!entry || entry.enabled === false) continue;
+      if (!entry) continue;
       const prompt = byIdentifier.get(entry.identifier ?? entry.id);
       if (!prompt || used.has(prompt)) continue;
-      used.add(prompt); selected.push(convertPresetPrompt(prompt));
+      used.add(prompt); selected.push(convertPresetPrompt(prompt, entry.enabled !== false));
     }
     for (const prompt of prompts) if (!used.has(prompt)) unused.push(convertPresetPrompt(prompt));
-    return { settings: presetSettings(source), prompts: selected, prompts_unused: unused, extensions: source.extensions && typeof source.extensions === 'object' ? clone(source.extensions) : {} };
+    const extensions = source.extensions && typeof source.extensions === 'object' ? clone(source.extensions) : {};
+    if (Array.isArray(extensions.regex_scripts)) extensions.regex_scripts = extensions.regex_scripts.map(value => {
+      const rule = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      const placement = Array.isArray(rule.placement) ? rule.placement.map(Number) : [];
+      return {
+        id: String(rule.id || ''), script_name: String(rule.scriptName || ''), enabled: rule.disabled !== true,
+        find_regex: String(rule.findRegex || ''), trim_strings: Array.isArray(rule.trimStrings) ? clone(rule.trimStrings) : [],
+        replace_string: String(rule.replaceString || ''),
+        source: { user_input: placement.includes(1), ai_output: placement.includes(2), slash_command: placement.includes(3), world_info: placement.includes(5), reasoning: placement.includes(6) },
+        destination: { display: rule.markdownOnly === true, prompt: rule.promptOnly === true },
+        run_on_edit: rule.runOnEdit === true, min_depth: typeof rule.minDepth === 'number' ? rule.minDepth : null,
+        max_depth: typeof rule.maxDepth === 'number' ? rule.maxDepth : null,
+      };
+    });
+    if (!extensions.tavern_helper || typeof extensions.tavern_helper !== 'object') extensions.tavern_helper = { scripts: [], variables: {} };
+    return { settings: presetSettings(source), prompts: selected, prompts_unused: unused, extensions };
+  };
+  // Reverse the public TavernHelper shape against the original raw document so unknown fields survive.
+  const rawPreset = (data, original = {}) => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new TypeError('预设数据格式无效');
+    if (!Array.isArray(data.prompts) || !Array.isArray(data.prompts_unused)) return clone(data);
+    const raw = clone(original && typeof original === 'object' && !Array.isArray(original) ? original : {});
+    const settings = data.settings && typeof data.settings === 'object' ? data.settings : {};
+    const aliases = {
+      max_context: ['openai_max_context'], max_completion_tokens: ['openai_max_tokens'], reply_count: ['n'],
+      temperature: ['temp_openai', 'temperature'], frequency_penalty: ['freq_pen_openai', 'frequency_penalty'],
+      presence_penalty: ['pres_pen_openai', 'presence_penalty'], repetition_penalty: ['repetition_penalty_openai', 'repetition_penalty'],
+      top_p: ['top_p_openai', 'top_p'], min_p: ['min_p_openai', 'min_p'], top_k: ['top_k_openai', 'top_k'],
+      top_a: ['top_a_openai', 'top_a'], seed: ['seed'], should_stream: ['stream_openai'],
+      squash_system_messages: ['squash_system_messages'], reasoning_effort: ['reasoning_effort'],
+      request_thoughts: ['show_thoughts'], request_images: ['request_images'],
+      enable_function_calling: ['function_calling'], enable_web_search: ['enable_web_search'],
+      allow_sending_videos: ['video_inlining'], wrap_user_messages_in_quotes: ['wrap_in_quotes'],
+    };
+    for (const [key, names] of Object.entries(aliases)) if (key in settings) for (const name of names) raw[name] = clone(settings[key]);
+    if ('allow_sending_images' in settings) {
+      raw.image_inlining = settings.allow_sending_images !== 'disabled';
+      raw.inline_image_quality = raw.image_inlining ? settings.allow_sending_images : 'auto';
+    }
+    if ('character_name_prefix' in settings) raw.names_behavior = ({ none: -1, default: 0, completion: 1, content: 2 })[settings.character_name_prefix] ?? -1;
+    const old = new Map((Array.isArray(raw.prompts) ? raw.prompts : []).map(prompt => [prompt.identifier, prompt]));
+    const seen = new Set();
+    raw.prompts = [...data.prompts, ...data.prompts_unused].flatMap(prompt => {
+      const id = String(prompt?.id || '');
+      if (!id || seen.has(id)) return [];
+      seen.add(id);
+      const value = { ...(old.get(id) || {}), identifier: id, name: String(prompt.name || 'unnamed'),
+        role: ['user', 'assistant'].includes(prompt.role) ? prompt.role : 'system', enabled: prompt.enabled !== false };
+      if (!markerIds.has(id) && typeof prompt.content === 'string') value.content = prompt.content;
+      if (!systemPromptIds.has(id)) {
+        value.injection_position = prompt.position?.type === 'in_chat' ? 1 : 0;
+        if (value.injection_position === 1) {
+          value.injection_depth = numeric(prompt.position?.depth, 4);
+          value.injection_order = numeric(prompt.position?.order, 100);
+        }
+      }
+      if (prompt.extra && typeof prompt.extra === 'object' && !Array.isArray(prompt.extra)) value.extra = clone(prompt.extra);
+      return [value];
+    });
+    if (!Array.isArray(raw.prompt_order)) raw.prompt_order = [];
+    let order = presetOrder(raw);
+    if (!order) { order = { character_id: 100001, order: [] }; raw.prompt_order.push(order); }
+    const oldOrder = new Map(order.order.map(entry => [String(entry.identifier ?? entry.id ?? ''), entry]));
+    order.order = data.prompts.filter(prompt => prompt?.id).map(prompt => ({
+      ...(oldOrder.get(String(prompt.id)) || {}), identifier: String(prompt.id), enabled: prompt.enabled !== false,
+    }));
+    const extensions = data.extensions && typeof data.extensions === 'object' ? clone(data.extensions) : {};
+    if (Array.isArray(extensions.regex_scripts)) {
+      const oldRules = new Map((Array.isArray(raw.extensions?.regex_scripts) ? raw.extensions.regex_scripts : []).filter(rule => rule && typeof rule === 'object').map(rule => [String(rule.id || ''), rule]));
+      extensions.regex_scripts = extensions.regex_scripts.map(value => {
+        const rule = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        const previous = oldRules.get(String(rule.id || '')) || {};
+        if (!('script_name' in rule || 'find_regex' in rule || 'source' in rule)) return { ...previous, ...rule };
+        const source = rule.source || {}, destination = rule.destination || {};
+        return { ...previous, id: String(rule.id || previous.id || ''), scriptName: String(rule.script_name ?? previous.scriptName ?? ''),
+          disabled: typeof rule.disabled === 'boolean' ? rule.disabled : rule.enabled === false, runOnEdit: rule.run_on_edit === true,
+          findRegex: String(rule.find_regex ?? previous.findRegex ?? ''), trimStrings: Array.isArray(rule.trim_strings) ? clone(rule.trim_strings) : [],
+          replaceString: String(rule.replace_string ?? previous.replaceString ?? ''),
+          placement: [...[[source.user_input, 1], [source.ai_output, 2], [source.slash_command, 3], [source.world_info, 5], [source.reasoning, 6]].filter(([enabled]) => enabled).map(([, value]) => value),
+            ...(Array.isArray(previous.placement) ? previous.placement.filter(value => ![1, 2, 3, 5, 6].includes(Number(value))) : [])],
+          minDepth: typeof rule.min_depth === 'number' ? rule.min_depth : null, maxDepth: typeof rule.max_depth === 'number' ? rule.max_depth : null,
+          markdownOnly: typeof rule.markdownOnly === 'boolean' ? rule.markdownOnly : destination.display === true, promptOnly: destination.prompt === true };
+      });
+    }
+    raw.extensions = { ...(raw.extensions && typeof raw.extensions === 'object' ? raw.extensions : {}), ...extensions };
+    return raw;
   };
   const getPreset = name => convertPreset(getPresetSettings(name));
   const getCompletionPresetByName = name => { try { return getPresetSettings(name); } catch (_) { return undefined; } };
@@ -214,7 +337,7 @@
   const getPresetList = () => ({
     presets: clone(presetListData),
     preset_names: Object.fromEntries(presetListNames.map((name, index) => [name, index])),
-    settings: presetSettings(presetData()),
+    settings: rawPresetSettings(presetData()),
   });
   const isCurrentPreset = value => {
     const record = presetRecord(value);
@@ -247,43 +370,57 @@
     return result;
   };
   const withData = data => data === undefined ? {} : { data };
+  const preparePreset = async (name, data) => {
+    if (data === undefined) return undefined;
+    if (!Array.isArray(data?.prompts) || !Array.isArray(data?.prompts_unused)) return rawPreset(data);
+    let original = {};
+    if (presetRecord(name) || !name || name === 'in_use') original = await fetchPreset(name);
+    else if (context.activePresetId) original = await fetchPreset();
+    return rawPreset(data, original);
+  };
   const createPreset = async (name, data, options) => {
     const target = String(name ?? '').trim();
     if (target === 'in_use' || getAllPresets().includes(target)) return false;
     assertWritableName(target);
-    await presetCommit('createPreset', target, withData(data));
+    const value = data === undefined && context.activePresetId ? await fetchPreset() : data;
+    await presetCommit('createPreset', target, withData(await preparePreset(target, value)));
     return true;
   };
   const savePreset = async (name, data, options) => {
     const target = assertWritableName(name);
-    await presetCommit('savePreset', target, withData(data));
+    await presetCommit('savePreset', target, withData(await preparePreset(target, data)));
   };
   const createOrReplacePreset = async (name, data, options) => {
     const target = assertWritableName(name, { allowInUse: true });
     // PiuPiu routes "in_use" through replacePreset: write the active preset, report nothing created.
     if (target === 'in_use') {
       const active = selectedPreset()?.name || context.activePresetId || 'in_use';
-      await presetCommit('replacePreset', active, { data: data === undefined ? {} : data });
+      await presetCommit('replacePreset', active, withData(await preparePreset(active, data === undefined ? await fetchPreset(active) : data)));
       return false;
     }
-    const result = await presetCommit('savePreset', target, withData(data));
+    const result = await presetCommit('savePreset', target, withData(await preparePreset(target, data)));
     return result?.created === true;
   };
   const replacePreset = async (name, data, options) => {
     if (data === undefined || data === null) throw new TypeError('预设数据格式无效');
     // An empty name means "the active preset"; resolve it locally so the host does not see "in_use".
     const target = String(name ?? '').trim() || selectedPreset()?.name || 'in_use';
-    await presetCommit('replacePreset', target, { data });
+    await presetCommit('replacePreset', target, { data: await preparePreset(target, data) });
   };
-  const setPreset = async (name, data, options) => {
-    const result = await presetCommit('setPreset', name, { data });
-    return convertPreset(result?.data ?? data);
-  };
+  const setPreset = async (name, data, options) => updatePresetWith(name, current => {
+    const merge = (base, patch) => {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return clone(patch);
+      const result = { ...(base && typeof base === 'object' && !Array.isArray(base) ? clone(base) : {}) };
+      for (const [key, value] of Object.entries(patch)) result[key] = merge(result[key], value);
+      return result;
+    };
+    return merge(current, data || {});
+  }, options);
   const deletePreset = async name => {
     const target = String(name ?? '').trim();
     if (!target || target === 'in_use' || !getAllPresets().includes(target)) return false;
-    try { await presetCommit('deletePreset', target); return true; }
-    catch (_) { return false; }
+    await presetCommit('deletePreset', target);
+    return true;
   };
   const renamePreset = async (name, newName, options) => {
     const from = String(name ?? '').trim(), to = String(newName ?? '').trim();
@@ -303,9 +440,9 @@
   const updatePresetWith = async (name, fn, options) => {
     if (typeof fn !== 'function') throw new TypeError('updatePresetWith 需要一个更新函数');
     const data = await fetchPreset(name);
-    const updated = await fn(clone(data));
+    const updated = await fn(convertPreset(data));
     if (!updated || typeof updated !== 'object') throw new TypeError('预设更新函数必须返回预设对象');
-    await savePreset(name, updated);
+    await presetCommit('replacePreset', name || 'in_use', { data: rawPreset(updated, data) });
     return updated;
   };
   // Fetch the active preset as soon as the runtime is installed; failures stay silent.
@@ -325,7 +462,11 @@
     getPresetSettings, getPreset, getCompletionPresetByName,
     findPreset: name => getAllPresets().includes(name) ? name : undefined,
     loadPreset, selectPreset, setActivePresetId: selectPreset,
-    getPresetList, createPreset, createOrReplacePreset, deletePreset, renamePreset, replacePreset, updatePreset, updatePresetWith, setPreset, savePreset,
+    getPresetList, createPreset, createOrReplacePreset,
+    deletePreset: name => deletePreset(name || selectedPreset()?.name),
+    renamePreset: newName => renamePreset(selectedPreset()?.name, newName),
+    replacePreset, updatePreset: options => savePreset(selectedPreset()?.name, undefined, options),
+    updatePresetWith, setPreset, savePreset,
     open: openPresetManager, show: openPresetManager, openManager: openPresetManager,
     openPresetManager, showPresetManager: openPresetManager, openPromptManager: openPresetManager,
   };
@@ -343,7 +484,7 @@
     };
     // PiuPiu exposes the preset sampling block as context.chatCompletionSettings; omit it when nothing is cached.
     const data = presetData();
-    if (data) result.chatCompletionSettings = presetSettings(data);
+    if (data) result.chatCompletionSettings = rawPresetSettings(data);
     return result;
   };
   const api = { getVariables, replaceVariables, insertOrAssignVariables, updateVariablesWith, getChatMessages, setChatMessages, getContext, eventOn, eventOff, eventOnce, eventEmit,
